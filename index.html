@@ -144,7 +144,11 @@
     padding: 2px 7px; font-size: .78rem; cursor: pointer;
   }
   .tile-tools button:hover { border-color: var(--accent); }
-  .tile.editing { outline: 2px dashed #e0b471; outline-offset: -2px; }
+  .tile.editing { outline: 2px dashed #e0b471; outline-offset: -2px; cursor: grab; }
+  .tile.dragging { opacity: .4; }
+  .tile.drop-before { box-shadow: -4px 0 0 var(--accent); }
+  .tile.drop-after { box-shadow: 4px 0 0 var(--accent); }
+  .grid.drop-end .tile.add { border-color: var(--accent); color: var(--accent); }
   .tile.add {
     border: 2px dashed var(--line); box-shadow: none; background: transparent; cursor: pointer;
     color: var(--muted); font-weight: 700; align-content: center; min-height: 150px;
@@ -239,7 +243,7 @@
   </div>
   <div class="editbar" id="editBar" hidden>
     <div class="editbar-inner">
-      <span class="grow" id="editStatus">編集中です。アイコンの下のボタンで直せます。変更は自動で保存されます。</span>
+      <span class="grow" id="editStatus">編集中です。アイコンの下のボタンで直せます。アイコンをつかんで動かすと並べ替えられます。変更は自動で保存されます。</span>
       <button type="button" class="btn small" id="btnAddSectionTop">＋ 区分を追加</button>
       <button type="button" class="btn small" id="btnSettings">⚙ 設定・バックアップ</button>
       <button type="button" class="btn small primary" id="btnEndEdit">編集を終える</button>
@@ -518,6 +522,15 @@ function render() {
       const add = el("button", { class: "tile add", type: "button" }, "＋ リンクを追加");
       add.onclick = () => editItem(sec, null);
       grid.append(add);
+      // タイルの無い所(「＋ リンクを追加」のあたり)に落とすと、その区分の最後に入れる。ほかの区分へも移せる。
+      grid.addEventListener("dragover", e => {
+        if (!dragging || e.target.closest(".tile.editing")) return;
+        e.preventDefault(); clearDropMarks(); grid.classList.add("drop-end");
+      });
+      grid.addEventListener("drop", e => {
+        if (!dragging || e.target.closest(".tile.editing")) return;
+        e.preventDefault(); dropItem(sec, sec.items.length);
+      });
     } else if (!items.length) {
       box.append(head, el("p", { class: "empty" }, "まだリンクがありません。"));
       main.append(box);
@@ -574,8 +587,49 @@ function tile(it, sec) {
       mk("▶", "後ろへ", () => moveItem(sec, idx, 1), idx === sec.items.length - 1),
     );
     t.append(tools);
+    // ドラッグで並べ替え。◀ ▶ ボタンも残す(マウス操作が苦手な人・タッチ操作のため)。
+    t.draggable = true;
+    t.addEventListener("dragstart", e => {
+      dragging = { sec, it };
+      e.dataTransfer.effectAllowed = "move";
+      e.dataTransfer.setData("text/plain", it.name); // Edge などで、何か入れないとドラッグが始まらないことがあるため
+      t.classList.add("dragging");
+    });
+    t.addEventListener("dragend", () => { dragging = null; clearDropMarks(); t.classList.remove("dragging"); });
+    t.addEventListener("dragover", e => {
+      if (!dragging) return;
+      e.preventDefault(); e.dataTransfer.dropEffect = "move";
+      clearDropMarks();
+      if (dragging.it !== it) t.classList.add(isAfterHalf(t, e) ? "drop-after" : "drop-before");
+    });
+    t.addEventListener("drop", e => {
+      if (!dragging) return;
+      e.preventDefault(); e.stopPropagation();
+      if (dragging.it === it) return clearDropMarks();
+      dropItem(sec, sec.items.indexOf(it) + (isAfterHalf(t, e) ? 1 : 0));
+    });
   }
   return t;
+}
+
+/* ドラッグで並べ替え */
+let dragging = null; // { sec, it } つかんでいるリンクと、その元の区分
+function isAfterHalf(t, e) { const r = t.getBoundingClientRect(); return e.clientX > r.left + r.width / 2; }
+function clearDropMarks() {
+  document.querySelectorAll(".drop-before, .drop-after, .drop-end").forEach(n => n.classList.remove("drop-before", "drop-after", "drop-end"));
+}
+// to の区分の pos 番目(0から)に入れる。pos は、つかんだリンクを抜く前の並びで数えた位置。
+function dropItem(to, pos) {
+  const { sec: from, it } = dragging;
+  dragging = null; clearDropMarks();
+  const old = from.items.indexOf(it);
+  if (old < 0) return;
+  from.items.splice(old, 1);
+  if (from === to && old < pos) pos--;
+  if (from === to && old === pos) { from.items.splice(old, 0, it); render(); return; } // 動いていない
+  to.items.splice(pos, 0, it);
+  changed();
+  if (from !== to) toast(`「${it.name}」を「${to.name}」へ移しました`);
 }
 
 async function copyText(text) {
