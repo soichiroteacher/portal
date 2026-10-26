@@ -12,7 +12,7 @@
   - 今あるアプリのリンク集(`../index.html`)とは**別に作る**(リンク集はアプリ専用のまま残す)。
   - リンクの追加・変更・削除は、**編集用パスワードを知る人だけ**ができる(うっかり変更を防ぐためで、強い守りではない)。
   - 名前は「校務ポータル」、フォルダは `portal`。
-- GitHub: https://github.com/soichiroteacher/portal (公開、ブランチ main)。2026-10-26 にユーザーの指示で公開で登録。`links-data.js` は `.gitignore` で除外している。
+- GitHub: https://github.com/soichiroteacher/portal (公開、ブランチ main)。確認用の公開ページ(GitHub Pages、main の直下): https://soichiroteacher.github.io/portal/ 。`links-data.js` が無いので最初の画面が出て、「見本で試す」で動きを確かめられる。2026-10-26 にユーザーの指示で公開で登録。`links-data.js` は `.gitignore` で除外している。
 
 ## 2. ファイル構成
 
