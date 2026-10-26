@@ -1,0 +1,12 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "portal",
+      "runtimeExecutable": "powershell.exe",
+      "runtimeArgs": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "../../.claude/serve-dir.ps1", "-Root", "apps", "-Port", "8105"],
+      "port": 8105,
+      "url": "http://localhost:8105"
+    }
+  ]
+}

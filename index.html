@@ -1,0 +1,946 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>校務ポータル</title>
+<!--
+============================================================
+ 校務ポータル
+------------------------------------------------------------
+ ・職員がよく使う校務アプリ・共有フォルダ・Webサイトへのリンクを、
+   スマートフォンのホーム画面のようにアイコンで並べるページ。
+ ・校務共有サーバーに置き、各職員のデスクトップにショートカットを置いて使う。
+ ・リンクのデータは、同じフォルダの links-data.js に入っている。
+   (ブラウザは file:// で開いたページから .json を読めないので、<script> で読める .js にしている)
+ ・編集は「✏ 編集する」→ 編集用パスワード → データファイル(links-data.js)を選ぶ。
+   File System Access API を使うので Chrome / Edge のみ。
+ ・外部ライブラリ・インターネット接続は使わない。
+
+ 【コードの構成】(下の <script> の中、上から順)
+   1. 設定欄(学校ごとに変えるもの)
+   2. 状態とデータの読み書き(links-data.js の形、編集ロック、自動保存)
+   3. 画面の表示(区分とアイコン)
+   4. 編集(リンク・区分の追加・変更・削除・並べ替え)
+   5. 設定・バックアップ・復元
+   6. はじめての方へ(画面ガイド)と見本
+============================================================
+-->
+<style>
+  :root {
+    --ground: #eef2f5;
+    --surface: #ffffff;
+    --ink: #1f2a33;
+    --muted: #5f6d78;
+    --line: #d5dde3;
+    --accent: #1f6fb2;
+    --accent-soft: #e3eef8;
+    --danger: #b3261e;
+    --edit: #a15c00;
+    --edit-soft: #fff1dc;
+    --shadow: 0 1px 2px rgba(20,40,60,.08), 0 4px 14px rgba(20,40,60,.08);
+    --font: "Yu Gothic UI", "Meiryo UI", "Meiryo", "Hiragino Kaku Gothic ProN", system-ui, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body {
+    background: var(--ground);
+    color: var(--ink);
+    font-family: var(--font);
+    font-size: 16px;
+    line-height: 1.6;
+  }
+  button, input, select, textarea { font: inherit; }
+  [hidden] { display: none !important; }
+
+  /* ---- 上の帯 ---- */
+  .top {
+    position: sticky; top: 0; z-index: 20;
+    background: var(--surface);
+    border-bottom: 1px solid var(--line);
+  }
+  .top-inner {
+    max-width: 1180px; margin: 0 auto;
+    padding: 12px 20px;
+    display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: center;
+  }
+  .brand { display: grid; margin-right: auto; min-width: 0; }
+  .brand h1 { margin: 0; font-size: 1.45rem; line-height: 1.3; }
+  .brand p { margin: 0; color: var(--muted); font-size: .9rem; }
+  .search {
+    flex: 1 1 220px; max-width: 340px;
+    padding: 9px 14px; border: 1px solid var(--line); border-radius: 999px;
+    background: var(--ground);
+  }
+  .search:focus { outline: 2px solid var(--accent); outline-offset: 1px; background: var(--surface); }
+  .btn {
+    padding: 8px 14px; border: 1px solid var(--line); border-radius: 8px;
+    background: var(--surface); color: var(--ink); cursor: pointer; white-space: nowrap;
+  }
+  .btn:hover { border-color: var(--accent); }
+  .btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 700; }
+  .btn.danger { color: var(--danger); border-color: var(--danger); }
+  .btn.small { padding: 4px 10px; font-size: .85rem; }
+  .editbar {
+    background: var(--edit-soft); border-top: 1px solid #f0d3a8;
+  }
+  .editbar-inner {
+    max-width: 1180px; margin: 0 auto; padding: 8px 20px;
+    display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; color: var(--edit); font-size: .92rem;
+  }
+  .editbar-inner .grow { margin-right: auto; }
+  .notice {
+    max-width: 1180px; margin: 12px auto 0; padding: 10px 16px;
+    border-radius: 8px; background: var(--edit-soft); color: var(--edit); font-size: .92rem;
+  }
+  .notice.sample { background: var(--accent-soft); color: var(--accent); }
+
+  /* ---- 区分とアイコン ---- */
+  main { max-width: 1180px; margin: 0 auto; padding: 20px; display: grid; gap: 28px; }
+  .section-head { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; flex-wrap: wrap; }
+  .section-head h2 { margin: 0; font-size: 1.15rem; }
+  .section-head .count { color: var(--muted); font-size: .85rem; }
+  .section-tools { display: flex; gap: 6px; margin-left: auto; }
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+    gap: 14px;
+  }
+  .tile {
+    position: relative;
+    display: grid; justify-items: center; align-content: start; gap: 8px;
+    padding: 16px 10px 14px;
+    background: var(--surface); border-radius: 16px; box-shadow: var(--shadow);
+    color: var(--ink); text-decoration: none; text-align: center;
+    transition: transform .12s ease, box-shadow .12s ease;
+  }
+  a.tile:hover { transform: translateY(-2px); box-shadow: 0 2px 4px rgba(20,40,60,.1), 0 10px 22px rgba(20,40,60,.12); }
+  a.tile:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+  .icon {
+    width: 68px; height: 68px; border-radius: 18px;
+    display: grid; place-items: center;
+    font-size: 36px; line-height: 1;
+    box-shadow: inset 0 -3px 0 rgba(0,0,0,.08);
+  }
+  .tile .name { font-weight: 700; font-size: .98rem; line-height: 1.35; }
+  .tile .desc {
+    font-size: .8rem; color: var(--muted); line-height: 1.45;
+    display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
+  }
+  .tile .kind { font-size: .72rem; color: var(--muted); border: 1px solid var(--line); border-radius: 999px; padding: 0 8px; }
+  .tile .copy {
+    position: absolute; top: 8px; right: 8px;
+    border: 1px solid var(--line); background: var(--surface); border-radius: 6px;
+    font-size: .72rem; padding: 2px 6px; cursor: pointer; color: var(--muted);
+  }
+  .tile .copy:hover { color: var(--accent); border-color: var(--accent); }
+  .tile-tools {
+    display: flex; gap: 4px; justify-content: center; flex-wrap: wrap;
+    margin-top: 2px;
+  }
+  .tile-tools button {
+    border: 1px solid var(--line); background: var(--ground); border-radius: 6px;
+    padding: 2px 7px; font-size: .78rem; cursor: pointer;
+  }
+  .tile-tools button:hover { border-color: var(--accent); }
+  .tile.editing { outline: 2px dashed #e0b471; outline-offset: -2px; }
+  .tile.add {
+    border: 2px dashed var(--line); box-shadow: none; background: transparent; cursor: pointer;
+    color: var(--muted); font-weight: 700; align-content: center; min-height: 150px;
+  }
+  .tile.add:hover { border-color: var(--accent); color: var(--accent); }
+  .empty { color: var(--muted); font-size: .9rem; padding: 6px 2px; }
+  .add-section { justify-self: start; }
+
+  /* ---- 最初の画面(データファイルが無いとき) ---- */
+  .welcome {
+    max-width: 640px; margin: 40px auto; padding: 28px;
+    background: var(--surface); border-radius: 16px; box-shadow: var(--shadow);
+    display: grid; gap: 14px;
+  }
+  .welcome h2 { margin: 0; }
+  .welcome p { margin: 0; }
+  .welcome .row { display: flex; gap: 10px; flex-wrap: wrap; }
+
+  /* ---- ダイアログ ---- */
+  .overlay {
+    position: fixed; inset: 0; z-index: 50;
+    background: rgba(15,25,35,.45);
+    display: grid; place-items: center; padding: 16px;
+  }
+  .dialog {
+    width: min(560px, 100%); max-height: calc(100vh - 32px); overflow: auto;
+    background: var(--surface); border-radius: 14px; padding: 22px;
+    display: grid; gap: 14px;
+  }
+  .dialog h3 { margin: 0; font-size: 1.15rem; }
+  .field { display: grid; gap: 4px; }
+  .field label { font-weight: 700; font-size: .9rem; }
+  .field .hint { color: var(--muted); font-size: .82rem; }
+  .field input, .field textarea, .field select {
+    padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); width: 100%;
+  }
+  .field textarea { min-height: 64px; resize: vertical; }
+  .dialog .actions { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; }
+  .error { color: var(--danger); font-size: .9rem; }
+  .icon-pick { display: grid; grid-template-columns: repeat(auto-fill, minmax(42px, 1fr)); gap: 6px; }
+  .icon-pick button {
+    height: 42px; border: 1px solid var(--line); border-radius: 10px; background: var(--ground);
+    font-size: 22px; cursor: pointer; line-height: 1;
+  }
+  .icon-pick button[aria-pressed="true"] { border: 2px solid var(--accent); background: var(--accent-soft); }
+  .color-pick { display: flex; gap: 8px; flex-wrap: wrap; }
+  .color-pick button {
+    width: 34px; height: 34px; border-radius: 50%; border: 2px solid transparent; cursor: pointer;
+  }
+  .color-pick button[aria-pressed="true"] { border-color: var(--ink); box-shadow: 0 0 0 2px var(--surface) inset; }
+  .preview { display: flex; gap: 12px; align-items: center; }
+  .preview .icon { width: 56px; height: 56px; font-size: 30px; border-radius: 15px; }
+
+  /* ---- 画面ガイド ---- */
+  .tour-hole {
+    position: fixed; z-index: 60; border-radius: 12px;
+    box-shadow: 0 0 0 9999px rgba(15,25,35,.55);
+    outline: 3px solid #ffd27a; pointer-events: none; transition: all .2s ease;
+  }
+  .tour-box {
+    position: fixed; z-index: 61; width: min(360px, calc(100vw - 32px));
+    background: var(--surface); border-radius: 12px; padding: 16px; box-shadow: var(--shadow);
+    display: grid; gap: 10px;
+  }
+  .tour-box h4 { margin: 0; }
+  .tour-box p { margin: 0; font-size: .92rem; }
+  .tour-box .actions { display: flex; gap: 8px; justify-content: flex-end; align-items: center; }
+  .tour-box .step { margin-right: auto; color: var(--muted); font-size: .8rem; }
+  .toast {
+    position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); z-index: 70;
+    background: var(--ink); color: #fff; padding: 10px 18px; border-radius: 999px; font-size: .92rem;
+  }
+  @media (max-width: 600px) {
+    .grid { grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); }
+    .top-inner, main { padding-left: 16px; padding-right: 16px; }
+  }
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+</head>
+<body>
+
+<header class="top">
+  <div class="top-inner">
+    <div class="brand">
+      <h1 id="pageTitle">校務ポータル</h1>
+      <p id="pageSubtitle"></p>
+    </div>
+    <input type="search" id="search" class="search" placeholder="🔍 さがす(名前・説明)" aria-label="リンクをさがす">
+    <button type="button" class="btn" id="btnTour">❓ はじめての方へ</button>
+    <button type="button" class="btn" id="btnReload" title="ほかの先生が直した内容を表示します">↻ 最新にする</button>
+    <button type="button" class="btn primary" id="btnEdit">✏ 編集する</button>
+  </div>
+  <div class="editbar" id="editBar" hidden>
+    <div class="editbar-inner">
+      <span class="grow" id="editStatus">編集中です。アイコンの下のボタンで直せます。変更は自動で保存されます。</span>
+      <button type="button" class="btn small" id="btnAddSectionTop">＋ 区分を追加</button>
+      <button type="button" class="btn small" id="btnSettings">⚙ 設定・バックアップ</button>
+      <button type="button" class="btn small primary" id="btnEndEdit">編集を終える</button>
+    </div>
+  </div>
+</header>
+
+<div class="notice sample" id="sampleNotice" hidden>
+  見本を表示しています(架空のリンクです)。見本は保存されません。
+  <button type="button" class="btn small" id="btnEndSample">見本を終える</button>
+</div>
+<div class="notice" id="lockNotice" hidden></div>
+
+<section class="welcome" id="welcome" hidden>
+  <h2>校務ポータルへようこそ</h2>
+  <p>リンクのデータファイル(<code>links-data.js</code>)が、このページと同じフォルダに見つかりません。</p>
+  <p>はじめて使う場合は、担当の先生が「データファイルを作る」を押してください(Chrome または Edge で開いてください)。どんな画面か試すときは「見本で試す」を押してください。</p>
+  <div class="row">
+    <button type="button" class="btn primary" id="btnCreate">データファイルを作る</button>
+    <button type="button" class="btn" id="btnSample">見本で試す</button>
+  </div>
+</section>
+
+<main id="main"></main>
+
+<div class="overlay" id="dialogOverlay" hidden>
+  <div class="dialog" id="dialog" role="dialog" aria-modal="true"></div>
+</div>
+
+<div class="toast" id="toast" hidden></div>
+
+<!-- リンクのデータ。無くてもページは開く(そのときは最初の画面を出す)。 -->
+<script src="links-data.js"></script>
+
+<script>
+"use strict";
+
+/* ============================================================
+   1. 設定欄(学校ごとに変えるもの)
+   ============================================================ */
+// 編集用パスワードの初期値。データファイルを作ったら「設定」で必ず変えてもらう。
+const DEFAULT_PASSWORD = "0000";
+// 編集中の印が、この時間より古ければ「閉じ忘れ」とみなして無視する(ミリ秒)。
+const EDIT_LOCK_STALE_MS = 15 * 60 * 1000;
+// アイコンの候補(絵文字)。足したいときはここに書き足す。
+const ICONS = ["🏫","📅","🗓️","📝","✏️","📊","📈","📁","📂","🗂️","🗃️","📋","📌","📎","📚","📖","🧑‍🏫","👩‍🏫","🧑‍🎓","👥","🔑","🔒","💻","🖥️","🖨️","📱","🌐","🔗","📧","📮","📞","📢","⚙️","🛠️","🧮","🧾","💴","🏆","🏥","🍱","🚌","⚽","🎵","🎨","🔬","🌸","🧹","⏰","🕒","⚠️","❓","ℹ️","⭐","🏠"];
+// アイコンの背景色の候補(白黒で印刷することはないので、色で区別してよい)。
+const COLORS = ["#2f80d1","#1b9e77","#e07a1f","#c0392b","#8e44ad","#16a3b8","#d4a017","#5d6d7e","#e84393","#2d3436"];
+// 新しくデータファイルを作ったときに最初から入れておく区分とリンク。
+// 校務アプリは、このポータルが apps フォルダの中(portal)に置かれている前提の相対パス。
+function initialSections() {
+  return [
+    { id: uid(), name: "校務アプリ", items: [
+      { id: uid(), name: "休暇管理", desc: "年休・特別休暇の取得と残りを管理", url: "../leave-manager/index.html", icon: "🗓️", color: COLORS[0] },
+      { id: uid(), name: "行事予定", desc: "年間・月間の行事予定、時数・給食の集計", url: "../school-events/index.html", icon: "📅", color: COLORS[1] },
+      { id: uid(), name: "時間割", desc: "基本時間割・週時間割・時数の管理", url: "../timetable/index.html", icon: "🕒", color: COLORS[5] },
+      { id: uid(), name: "マークシート採点", desc: "スキャンした解答用紙を自動で採点", url: "../marksheet-grader/index.html", icon: "📝", color: COLORS[2] },
+      { id: uid(), name: "定期テスト", desc: "日程・監督表・配慮生徒・印刷物", url: "../exam-manager/index.html", icon: "📋", color: COLORS[3] },
+      { id: uid(), name: "仕事管理", desc: "分掌・学年の仕事のガントチャート", url: "../work-planner/index.html", icon: "📊", color: COLORS[4] },
+      { id: uid(), name: "アカウント管理", desc: "生徒のアカウントとタブレット端末", url: "../account-manager/index.html", icon: "🔑", color: COLORS[7] },
+      { id: uid(), name: "フォルダ容量ビューア", desc: "フォルダの容量を大きい順に表示(.exe)", url: "../folder-size-viewer/dist/", icon: "📁", color: COLORS[6] },
+    ]},
+    { id: uid(), name: "共有フォルダ", items: [] },
+    { id: uid(), name: "Webサイト", items: [] },
+  ];
+}
+
+/* ============================================================
+   2. 状態とデータの読み書き
+   ============================================================ */
+const FILE_FORMAT = "school-portal-data";
+const NAME_KEY = "school-portal.editorName";
+const TOUR_KEY = "school-portal.tourSeen";
+const supportsFileAccess = "showOpenFilePicker" in window && "showSaveFilePicker" in window;
+const SESSION_ID = Math.random().toString(36).slice(2, 10);
+
+let data = null;          // 表示しているデータ
+let fileHandle = null;    // 編集中のデータファイル
+let editMode = false;
+let sampleMode = false;
+let saveTimer = null;
+let saveChain = Promise.resolve();
+let lastSavedAt = null;
+
+function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 7); }
+function $(id) { return document.getElementById(id); }
+function todayStr() {
+  const d = new Date(), p = n => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
+function formatTime(iso) {
+  if (!iso) return "";
+  const d = new Date(iso), p = n => String(n).padStart(2, "0");
+  return `${d.getMonth() + 1}/${d.getDate()} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+function toast(msg) {
+  const t = $("toast"); t.textContent = msg; t.hidden = false;
+  clearTimeout(toast.timer); toast.timer = setTimeout(() => { t.hidden = true; }, 2600);
+}
+function storeGet(key) { try { return localStorage.getItem(key); } catch (e) { return null; } }
+function storeSet(key, v) { try { localStorage.setItem(key, v); } catch (e) { /* 使えなくても動く */ } }
+
+// 編集用パスワードの照合用。うっかり変更を防ぐためのもので、強い守りではない
+// (file:// では暗号の機能が使えないことがあるので、簡単な計算にしている)。
+function hashPassword(s) {
+  let h = 2166136261;
+  for (const ch of "school-portal:" + s) { h ^= ch.codePointAt(0); h = Math.imul(h, 16777619) >>> 0; }
+  return h.toString(16);
+}
+
+// 足りない項目を補う(古いデータファイルや手で直したファイルでも動くように)。
+function normalize(d) {
+  d = d && typeof d === "object" ? d : {};
+  d.format = FILE_FORMAT;
+  d.version = 1;
+  d.title = d.title || "校務ポータル";
+  d.subtitle = d.subtitle || "";
+  d.passwordHash = d.passwordHash || hashPassword(DEFAULT_PASSWORD);
+  d.editLock = d.editLock || { active: false };
+  d.sections = Array.isArray(d.sections) ? d.sections : [];
+  for (const s of d.sections) {
+    s.id = s.id || uid(); s.name = s.name || "区分";
+    s.items = Array.isArray(s.items) ? s.items : [];
+    for (const it of s.items) {
+      it.id = it.id || uid(); it.name = it.name || "リンク"; it.desc = it.desc || "";
+      it.url = it.url || ""; it.icon = it.icon || "🔗"; it.color = it.color || COLORS[0];
+    }
+  }
+  return d;
+}
+
+// links-data.js の中身(文字)を作る。window.PORTAL_DATA = {...}; の形。
+function toFileText(d) {
+  return "// 校務ポータルのリンクのデータです。\n"
+    + "// ポータルの「✏ 編集する」から保存すると上書きされます。このファイルを直接書き換えないでください。\n"
+    + "window.PORTAL_DATA = " + JSON.stringify(d, null, 2) + ";\n";
+}
+// links-data.js の文字から、データを取り出す。
+function fromFileText(text) {
+  const start = text.indexOf("{"), end = text.lastIndexOf("}");
+  if (start < 0 || end < start) throw new Error("リンクのデータが見つかりません。");
+  const d = JSON.parse(text.slice(start, end + 1));
+  if (d.format !== FILE_FORMAT) throw new Error("校務ポータルのデータファイルではありません。");
+  return d;
+}
+async function readHandle(handle) { return fromFileText(await (await handle.getFile()).text()); }
+
+function isLockFresh(lock) {
+  if (!lock || !lock.active || !lock.since) return false;
+  return Date.now() - new Date(lock.since).getTime() < EDIT_LOCK_STALE_MS;
+}
+function isForeignLock(lock) { return isLockFresh(lock) && lock.session !== SESSION_ID; }
+
+// 前回選んだデータファイルを、ブラウザに覚えておく(次から選び直さなくてよいように)。
+function idb(mode, fn) {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open("school-portal", 1);
+    req.onupgradeneeded = () => req.result.createObjectStore("kv");
+    req.onerror = () => reject(req.error);
+    req.onsuccess = () => {
+      const tx = req.result.transaction("kv", mode);
+      const r = fn(tx.objectStore("kv"));
+      tx.oncomplete = () => resolve(r && r.result);
+      tx.onerror = () => reject(tx.error);
+    };
+  });
+}
+const idbGet = key => idb("readonly", s => s.get(key)).catch(() => null);
+const idbSet = (key, v) => idb("readwrite", s => s.put(v, key)).catch(() => {});
+
+// 保存(順番待ちにして、2つの保存が混ざらないようにする)
+function writeFile({ releaseLock = false } = {}) {
+  const snapshot = JSON.parse(JSON.stringify(data));
+  const run = async () => {
+    const current = await readHandle(fileHandle);
+    if (isForeignLock(current.editLock)) {
+      throw new Error(`${current.editLock.by || "ほかの先生"}が編集中のため、保存できませんでした。`);
+    }
+    const now = new Date().toISOString();
+    snapshot.savedAt = now;
+    snapshot.editLock = releaseLock ? { active: false } : { active: true, since: now, by: storeGet(NAME_KEY) || "", session: SESSION_ID };
+    const w = await fileHandle.createWritable();
+    await w.write(toFileText(snapshot));
+    await w.close();
+    lastSavedAt = now;
+    data.savedAt = now;
+    if (editMode) $("editStatus").textContent = `編集中です。変更は自動で保存されます(保存 ${formatTime(now)})。`;
+  };
+  const p = saveChain.then(run);
+  saveChain = p.catch(() => {});
+  return p;
+}
+function scheduleSave() {
+  if (sampleMode || !editMode) return;
+  $("editStatus").textContent = "編集中です。保存しています…";
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(() => {
+    writeFile().catch(err => {
+      alert("保存できませんでした。\n" + err.message + "\n\n共有サーバーにつながっているか確かめてから、もう一度直してください。");
+      $("editStatus").textContent = "保存できませんでした。";
+    });
+  }, 600);
+}
+function changed() { render(); scheduleSave(); }
+
+/* ============================================================
+   3. 画面の表示
+   ============================================================ */
+// リンク先の書き方を、ブラウザで開ける形にする。
+//  ・https://… などはそのまま
+//  ・\\サーバー\共有\… や C:\… は file:/// の形に直す
+//  ・../leave-manager/index.html のような相対パスはそのまま(このページの場所から見た位置)
+function hrefOf(url) {
+  const u = (url || "").trim();
+  if (/^\\\\/.test(u)) return "file:" + u.replace(/\\/g, "/");
+  if (/^[A-Za-z]:\\/.test(u)) return "file:///" + u.replace(/\\/g, "/");
+  return u;
+}
+function isPath(url) { return /^\\\\|^[A-Za-z]:\\/.test((url || "").trim()); }
+function kindOf(url) {
+  const u = (url || "").trim();
+  if (isPath(u)) return "共有フォルダ・ファイル";
+  if (/^https?:/i.test(u)) return "Webサイト";
+  if (u) return "校務アプリ";
+  return "";
+}
+
+function el(tag, attrs = {}, text) {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (k === "class") e.className = v; else e.setAttribute(k, v);
+  }
+  if (text !== undefined) e.textContent = text;
+  return e;
+}
+
+function render() {
+  const main = $("main");
+  main.replaceChildren();
+  $("welcome").hidden = !!data;
+  $("btnEdit").hidden = !data || editMode || sampleMode;
+  $("btnReload").hidden = !data || editMode || sampleMode;
+  $("editBar").hidden = !editMode;
+  $("sampleNotice").hidden = !sampleMode;
+  // 見ているだけの人に、ほかの先生が編集中であることを知らせる(開いた時点のファイルの内容で判断)
+  const lock = data && !editMode && !sampleMode && isForeignLock(data.editLock) ? data.editLock : null;
+  $("lockNotice").hidden = !lock;
+  if (lock) $("lockNotice").textContent = `${lock.by || "ほかの先生"}がリンクを編集中です(${formatTime(lock.since)}から)。終わったら「↻ 最新にする」を押すと、新しい内容が表示されます。`;
+  if (!data) return;
+
+  $("pageTitle").textContent = data.title;
+  document.title = data.title;
+  $("pageSubtitle").textContent = data.subtitle;
+  $("pageSubtitle").hidden = !data.subtitle;
+
+  const q = $("search").value.trim().toLowerCase();
+  data.sections.forEach((sec, si) => {
+    const items = sec.items.filter(it => !q || (it.name + " " + it.desc).toLowerCase().includes(q));
+    if (q && !items.length) return;
+    const box = el("section", { "data-section": sec.id });
+    const head = el("div", { class: "section-head" });
+    head.append(el("h2", {}, sec.name), el("span", { class: "count" }, `${items.length}件`));
+    if (editMode) {
+      const tools = el("div", { class: "section-tools" });
+      tools.append(
+        smallBtn("▲", "区分を上へ", () => moveSection(si, -1), si === 0),
+        smallBtn("▼", "区分を下へ", () => moveSection(si, 1), si === data.sections.length - 1),
+        smallBtn("✎ 名前", "区分の名前を変える", () => editSection(sec)),
+        smallBtn("🗑 区分を削除", "区分を削除", () => deleteSection(si), false, true),
+      );
+      head.append(tools);
+    }
+    const grid = el("div", { class: "grid" });
+    items.forEach(it => grid.append(tile(it, sec)));
+    if (editMode) {
+      const add = el("button", { class: "tile add", type: "button" }, "＋ リンクを追加");
+      add.onclick = () => editItem(sec, null);
+      grid.append(add);
+    } else if (!items.length) {
+      box.append(head, el("p", { class: "empty" }, "まだリンクがありません。"));
+      main.append(box);
+      return;
+    }
+    box.append(head, grid);
+    main.append(box);
+  });
+  if (q && !main.children.length) main.append(el("p", { class: "empty" }, `「${$("search").value}」に当てはまるリンクはありません。`));
+  if (editMode) {
+    const b = el("button", { class: "btn add-section", type: "button" }, "＋ 区分を追加");
+    b.onclick = addSection;
+    main.append(b);
+  }
+}
+
+function smallBtn(label, title, fn, disabled, danger) {
+  const b = el("button", { class: "btn small" + (danger ? " danger" : ""), type: "button", title }, label);
+  b.onclick = fn; b.disabled = !!disabled;
+  return b;
+}
+
+function iconEl(it) {
+  const i = el("div", { class: "icon", "aria-hidden": "true" }, it.icon);
+  i.style.background = it.color;
+  return i;
+}
+
+function tile(it, sec) {
+  const kind = kindOf(it.url);
+  let t;
+  if (editMode) {
+    t = el("div", { class: "tile editing" });
+  } else {
+    t = el("a", { class: "tile", href: hrefOf(it.url), target: "_blank", rel: "noopener", title: it.url });
+  }
+  t.append(iconEl(it), el("div", { class: "name" }, it.name));
+  if (it.desc) t.append(el("div", { class: "desc" }, it.desc));
+  if (kind) t.append(el("span", { class: "kind" }, kind));
+  // 共有フォルダは、ブラウザで開けない(または中身の一覧しか出ない)ことがあるので、場所をコピーできるようにする。
+  if (!editMode && isPath(it.url)) {
+    const c = el("button", { class: "copy", type: "button", title: "場所をコピーして、エクスプローラーのアドレス欄に貼り付けられます" }, "📋 場所");
+    c.onclick = e => { e.preventDefault(); e.stopPropagation(); copyText(it.url); };
+    t.append(c);
+  }
+  if (editMode) {
+    const idx = sec.items.indexOf(it);
+    const tools = el("div", { class: "tile-tools" });
+    const mk = (label, title, fn, disabled) => { const b = el("button", { type: "button", title }, label); b.onclick = fn; b.disabled = !!disabled; return b; };
+    tools.append(
+      mk("◀", "前へ", () => moveItem(sec, idx, -1), idx === 0),
+      mk("✎ 直す", "このリンクを直す", () => editItem(sec, it)),
+      mk("🗑", "このリンクを削除", () => deleteItem(sec, idx)),
+      mk("▶", "後ろへ", () => moveItem(sec, idx, 1), idx === sec.items.length - 1),
+    );
+    t.append(tools);
+  }
+  return t;
+}
+
+async function copyText(text) {
+  try { await navigator.clipboard.writeText(text); toast("場所をコピーしました。エクスプローラーのアドレス欄に貼り付けてください。"); }
+  catch (e) { prompt("この場所をコピーしてください(Ctrl+C)", text); }
+}
+
+/* ============================================================
+   4. 編集
+   ============================================================ */
+function openDialog(build) {
+  const d = $("dialog"); d.replaceChildren();
+  build(d);
+  $("dialogOverlay").hidden = false;
+  const first = d.querySelector("input, textarea, select, button");
+  if (first) first.focus();
+}
+function closeDialog() { $("dialogOverlay").hidden = true; }
+$("dialogOverlay").addEventListener("click", e => { if (e.target.id === "dialogOverlay") closeDialog(); });
+document.addEventListener("keydown", e => { if (e.key === "Escape" && !$("dialogOverlay").hidden) closeDialog(); });
+
+function field(labelText, input, hint) {
+  const f = el("div", { class: "field" });
+  const id = "f_" + uid();
+  input.id = id;
+  f.append(el("label", { for: id }, labelText), input);
+  if (hint) f.append(el("div", { class: "hint" }, hint));
+  return f;
+}
+function actions(...buttons) { const a = el("div", { class: "actions" }); a.append(...buttons); return a; }
+function button(label, cls, fn) { const b = el("button", { type: "button", class: "btn " + (cls || "") }, label); b.onclick = fn; return b; }
+
+function editItem(sec, item) {
+  const isNew = !item;
+  const it = item ? { ...item } : { name: "", desc: "", url: "", icon: "🔗", color: COLORS[0] };
+  openDialog(d => {
+    d.append(el("h3", {}, isNew ? `「${sec.name}」にリンクを追加` : "リンクを直す"));
+    const preview = el("div", { class: "preview" });
+    const pIcon = iconEl(it), pName = el("strong", {}, it.name || "(名前)");
+    preview.append(pIcon, pName);
+    const name = el("input", { type: "text", maxlength: "40" }); name.value = it.name;
+    const desc = el("textarea", { maxlength: "120" }); desc.value = it.desc;
+    const url = el("input", { type: "text" }); url.value = it.url;
+    name.oninput = () => { pName.textContent = name.value || "(名前)"; };
+    const iconGrid = el("div", { class: "icon-pick", role: "group", "aria-label": "アイコン" });
+    ICONS.forEach(ic => {
+      const b = el("button", { type: "button", "aria-pressed": String(ic === it.icon), title: ic }, ic);
+      b.onclick = () => { it.icon = ic; pIcon.textContent = ic; iconGrid.querySelectorAll("button").forEach(x => x.setAttribute("aria-pressed", String(x === b))); };
+      iconGrid.append(b);
+    });
+    const colorRow = el("div", { class: "color-pick", role: "group", "aria-label": "色" });
+    COLORS.forEach(c => {
+      const b = el("button", { type: "button", "aria-pressed": String(c === it.color), title: c });
+      b.style.background = c;
+      b.onclick = () => { it.color = c; pIcon.style.background = c; colorRow.querySelectorAll("button").forEach(x => x.setAttribute("aria-pressed", String(x === b))); };
+      colorRow.append(b);
+    });
+    const err = el("p", { class: "error" }); err.hidden = true;
+    d.append(
+      preview,
+      field("名前(アイコンの下に出ます)", name),
+      field("説明", desc, "何のためのリンクか、短く書きます(3行くらいまで表示されます)。"),
+      field("リンク先", url, "Webサイトは https://… 、共有フォルダは \\\\サーバー名\\共有\\… 、校務アプリは ../leave-manager/index.html のように書きます。"),
+    );
+    const iconField = el("div", { class: "field" }); iconField.append(el("label", {}, "アイコン"), iconGrid);
+    const colorField = el("div", { class: "field" }); colorField.append(el("label", {}, "色"), colorRow);
+    d.append(iconField, colorField, err, actions(
+      button("キャンセル", "", closeDialog),
+      button(isNew ? "追加する" : "保存する", "primary", () => {
+        if (!name.value.trim()) { err.textContent = "名前を入れてください。"; err.hidden = false; name.focus(); return; }
+        if (!url.value.trim()) { err.textContent = "リンク先を入れてください。"; err.hidden = false; url.focus(); return; }
+        const next = { ...it, name: name.value.trim(), desc: desc.value.trim(), url: url.value.trim() };
+        if (isNew) { next.id = uid(); sec.items.push(next); }
+        else Object.assign(item, next);
+        closeDialog(); changed(); toast(isNew ? "追加しました" : "保存しました");
+      }),
+    ));
+  });
+}
+
+function deleteItem(sec, idx) {
+  const it = sec.items[idx];
+  if (!confirm(`「${it.name}」を削除します。元に戻せません。よろしいですか？`)) return;
+  sec.items.splice(idx, 1); changed(); toast("削除しました");
+}
+function moveItem(sec, idx, dir) {
+  const j = idx + dir; if (j < 0 || j >= sec.items.length) return;
+  [sec.items[idx], sec.items[j]] = [sec.items[j], sec.items[idx]]; changed();
+}
+function moveSection(i, dir) {
+  const j = i + dir; if (j < 0 || j >= data.sections.length) return;
+  [data.sections[i], data.sections[j]] = [data.sections[j], data.sections[i]]; changed();
+}
+function addSection() { editSection(null); }
+$("btnAddSectionTop").onclick = addSection;
+function editSection(sec) {
+  openDialog(d => {
+    d.append(el("h3", {}, sec ? "区分の名前を変える" : "区分を追加"));
+    const name = el("input", { type: "text", maxlength: "30" }); name.value = sec ? sec.name : "";
+    const err = el("p", { class: "error" }); err.hidden = true;
+    d.append(field("区分の名前", name, "例：校務アプリ、共有フォルダ、Webサイト、様式・マニュアル"), err, actions(
+      button("キャンセル", "", closeDialog),
+      button(sec ? "保存する" : "追加する", "primary", () => {
+        if (!name.value.trim()) { err.textContent = "名前を入れてください。"; err.hidden = false; return; }
+        if (sec) sec.name = name.value.trim();
+        else data.sections.push({ id: uid(), name: name.value.trim(), items: [] });
+        closeDialog(); changed();
+      }),
+    ));
+  });
+}
+function deleteSection(i) {
+  const sec = data.sections[i];
+  const n = sec.items.length;
+  if (!confirm(`区分「${sec.name}」${n ? `と、その中のリンク${n}件` : ""}を削除します。元に戻せません。よろしいですか？`)) return;
+  data.sections.splice(i, 1); changed(); toast("削除しました");
+}
+
+// ---- 編集の開始と終了 ----
+$("btnEdit").onclick = () => {
+  if (!supportsFileAccess) { alert("このブラウザでは編集できません。Google Chrome か Microsoft Edge で開いてください。"); return; }
+  openDialog(d => {
+    d.append(el("h3", {}, "編集する"));
+    const pw = el("input", { type: "password", autocomplete: "off" });
+    const nm = el("input", { type: "text", maxlength: "20" }); nm.value = storeGet(NAME_KEY) || "";
+    const err = el("p", { class: "error" }); err.hidden = true;
+    d.append(
+      field("編集用パスワード", pw, "分からないときは、担当の先生に聞いてください。"),
+      field("あなたの名前", nm, "編集中は、ほかの先生の画面に「○○先生が編集中」と出ます。"),
+      err,
+      actions(button("キャンセル", "", closeDialog), button("編集を始める", "primary", async () => {
+        if (hashPassword(pw.value) !== data.passwordHash) { err.textContent = "パスワードが違います。もう一度入れてください。"; err.hidden = false; pw.select(); return; }
+        if (!nm.value.trim()) { err.textContent = "名前を入れてください。"; err.hidden = false; nm.focus(); return; }
+        storeSet(NAME_KEY, nm.value.trim());
+        closeDialog();
+        await startEditing();
+      })),
+    );
+  });
+};
+
+async function getHandle() {
+  // 前回選んだファイルがあれば、それを使う(ボタンを押した直後なので、許可の確認を出せる)
+  const last = await idbGet("dataFile");
+  if (last) {
+    try { if (await last.requestPermission({ mode: "readwrite" }) === "granted") return last; } catch (e) { /* 選び直してもらう */ }
+  }
+  alert("このパソコンで初めて編集するときだけ、データファイルを選びます。\n次の画面で、このページと同じフォルダにある「links-data.js」を選んでください。");
+  const [h] = await window.showOpenFilePicker({ types: [{ description: "校務ポータルのデータ", accept: { "text/javascript": [".js"] } }] });
+  if (await h.requestPermission({ mode: "readwrite" }) !== "granted") throw new Error("ファイルへの書き込みが許可されませんでした。");
+  await idbSet("dataFile", h);
+  return h;
+}
+
+async function startEditing() {
+  try {
+    fileHandle = await getHandle();
+    const current = normalize(await readHandle(fileHandle));
+    if (isForeignLock(current.editLock)) {
+      if (!confirm(`⚠ ${current.editLock.by || "ほかの先生"}が編集中です(${formatTime(current.editLock.since)}から)。\nこのまま編集すると、その先生の変更が消えるおそれがあります。それでも編集しますか？`)) return;
+    }
+    data = current;     // 最新のファイルの内容から編集を始める
+    editMode = true;
+    render();
+    await writeFile();  // 編集中の印を書く
+    toast("編集を始めました");
+  } catch (err) {
+    if (err.name === "AbortError") return;
+    editMode = false; render();
+    alert("編集を始められませんでした。\n" + err.message + "\n\n選んだのがこのページと同じフォルダの links-data.js か、共有サーバーにつながっているかを確かめてください。");
+  }
+}
+
+$("btnEndEdit").onclick = async () => {
+  clearTimeout(saveTimer);
+  try { await writeFile({ releaseLock: true }); }
+  catch (err) { alert("保存できませんでした。\n" + err.message + "\n\n共有サーバーにつながっているか確かめてから、もう一度「編集を終える」を押してください。"); return; }
+  editMode = false; render(); toast("保存して、編集を終えました");
+};
+window.addEventListener("beforeunload", e => { if (editMode) { e.preventDefault(); e.returnValue = ""; } });
+
+$("btnReload").onclick = () => location.reload();
+$("search").addEventListener("input", render);
+
+/* ============================================================
+   5. 設定・バックアップ・復元・新規作成
+   ============================================================ */
+$("btnSettings").onclick = () => openDialog(d => {
+  d.append(el("h3", {}, "設定・バックアップ"));
+  const title = el("input", { type: "text", maxlength: "30" }); title.value = data.title;
+  const sub = el("input", { type: "text", maxlength: "60" }); sub.value = data.subtitle;
+  const pw1 = el("input", { type: "password", autocomplete: "new-password" });
+  const pw2 = el("input", { type: "password", autocomplete: "new-password" });
+  const err = el("p", { class: "error" }); err.hidden = true;
+  d.append(
+    field("ページの名前", title),
+    field("説明(名前の下に小さく出ます)", sub, "例：〇〇中学校 職員用"),
+    field("新しい編集用パスワード(変えるときだけ)", pw1, "最初は「0000」です。必ず変えてください。"),
+    field("新しい編集用パスワード(確認)", pw2),
+    err,
+    actions(button("閉じる", "", closeDialog), button("保存する", "primary", () => {
+      if (pw1.value || pw2.value) {
+        if (pw1.value.length < 4) { err.textContent = "パスワードは4文字以上にしてください。"; err.hidden = false; return; }
+        if (pw1.value !== pw2.value) { err.textContent = "確認のパスワードが一致しません。"; err.hidden = false; return; }
+        data.passwordHash = hashPassword(pw1.value);
+      }
+      data.title = title.value.trim() || "校務ポータル";
+      data.subtitle = sub.value.trim();
+      closeDialog(); changed(); toast("保存しました");
+    })),
+    el("hr"),
+    el("h3", {}, "バックアップと復元"),
+    el("p", { class: "hint" }, "「データを書き出す」で今のリンクをファイルに控えます。元に戻すときは「データを読み込む」で控えたファイルを選びます(今のリンクは置き換わります)。"),
+    actions(
+      button("データを書き出す(バックアップ)", "", exportBackup),
+      button("データを読み込む(復元)", "", importBackup),
+    ),
+  );
+});
+
+function exportBackup() {
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+  const a = el("a", { href: URL.createObjectURL(blob), download: `校務ポータル_バックアップ_${todayStr()}.json` });
+  document.body.append(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+function importBackup() {
+  const inp = el("input", { type: "file", accept: ".json,.js" });
+  inp.onchange = async () => {
+    const f = inp.files[0]; if (!f) return;
+    let d;
+    try {
+      const text = await f.text();
+      d = text.trim().startsWith("{") ? JSON.parse(text) : fromFileText(text);
+      if (d.format !== FILE_FORMAT) throw new Error("校務ポータルのバックアップではありません。");
+    } catch (e) {
+      alert("このファイルは読み込めません。\n" + e.message + "\n\n「データを書き出す(バックアップ)」で作ったファイルを選んでください。");
+      return;
+    }
+    const n = (d.sections || []).reduce((a, s) => a + (s.items || []).length, 0);
+    if (!confirm(`バックアップ「${f.name}」(区分${(d.sections || []).length}つ・リンク${n}件)の内容で、今のリンクをすべて置き換えます。元に戻せません。よろしいですか？`)) return;
+    const keepPw = data.passwordHash;
+    data = normalize(d);
+    data.passwordHash = d.passwordHash || keepPw;
+    closeDialog(); changed(); toast("バックアップから復元しました");
+  };
+  inp.click();
+}
+
+$("btnCreate").onclick = async () => {
+  if (!supportsFileAccess) { alert("このブラウザではデータファイルを作れません。Google Chrome か Microsoft Edge で開いてください。"); return; }
+  alert("次の画面で、このページ(index.html)と同じフォルダを選び、名前は「links-data.js」のまま保存してください。\n名前を変えると、ページがリンクを読み込めません。");
+  try {
+    const h = await window.showSaveFilePicker({ suggestedName: "links-data.js", types: [{ description: "校務ポータルのデータ", accept: { "text/javascript": [".js"] } }] });
+    const d = normalize({ sections: initialSections() });
+    d.savedAt = new Date().toISOString();
+    const w = await h.createWritable(); await w.write(toFileText(d)); await w.close();
+    await idbSet("dataFile", h);
+    alert("データファイルを作りました。ページを開き直します。\n\n編集用パスワードは最初「0000」です。「✏ 編集する」→「⚙ 設定・バックアップ」で、必ず変えてください。");
+    location.reload();
+  } catch (err) {
+    if (err.name !== "AbortError") alert("データファイルを作れませんでした。\n" + err.message);
+  }
+};
+
+/* ============================================================
+   6. 見本と、はじめての方へ(画面ガイド)
+   ============================================================ */
+let beforeSample = null;
+function sampleData() {
+  return normalize({
+    title: "校務ポータル(見本)",
+    subtitle: "みほん中学校 職員用",
+    sections: [
+      { name: "校務アプリ", items: [
+        { name: "休暇管理", desc: "年休・特別休暇の取得と残りを管理", url: "../leave-manager/index.html", icon: "🗓️", color: COLORS[0] },
+        { name: "行事予定", desc: "年間・月間の行事予定、時数・給食の集計", url: "../school-events/index.html", icon: "📅", color: COLORS[1] },
+        { name: "マークシート採点", desc: "スキャンした解答用紙を自動で採点", url: "../marksheet-grader/index.html", icon: "📝", color: COLORS[2] },
+        { name: "定期テスト", desc: "日程・監督表・配慮生徒・印刷物", url: "../exam-manager/index.html", icon: "📋", color: COLORS[3] },
+      ]},
+      { name: "共有フォルダ", items: [
+        { name: "職員共有", desc: "学年・分掌ごとのフォルダ。年度のフォルダの中に入れる", url: "\\\\example-server\\share\\職員共有", icon: "📂", color: COLORS[6] },
+        { name: "様式集", desc: "出張・休暇・各種届の様式(最新版はここ)", url: "\\\\example-server\\share\\様式集", icon: "🗂️", color: COLORS[7] },
+      ]},
+      { name: "Webサイト", items: [
+        { name: "文部科学省", desc: "学習指導要領・通知など", url: "https://www.mext.go.jp/", icon: "🌐", color: COLORS[5] },
+        { name: "学校のホームページ", desc: "保護者向けのお知らせ(見本なので実在しません)", url: "https://example.com/", icon: "🏫", color: COLORS[4] },
+      ]},
+    ],
+  });
+}
+function startSample() {
+  beforeSample = data;
+  data = sampleData(); sampleMode = true; editMode = false;
+  render();
+}
+function endSample() {
+  data = beforeSample; beforeSample = null; sampleMode = false;
+  render();
+}
+$("btnSample").onclick = startSample;
+$("btnEndSample").onclick = endSample;
+
+const TOUR = [
+  { sel: "#main .tile", title: "アイコンを押すと開きます", text: "アイコンを押すと、そのアプリ・フォルダ・Webサイトが新しいタブで開きます。名前の下に、何のためのリンクかの説明があります。" },
+  { sel: "#main .tile .copy", title: "共有フォルダの場所をコピー", text: "共有フォルダは、ブラウザで開けないことがあります。そのときは「📋 場所」を押して、エクスプローラーのアドレス欄に貼り付けてください。" },
+  { sel: "#search", title: "さがす", text: "名前や説明の一部を入れると、当てはまるリンクだけが表示されます。" },
+  { sel: "#btnReload", title: "最新にする", text: "ほかの先生がリンクを直したときは、このボタンで最新の内容が表示されます。" },
+  { sel: "#btnEdit", title: "リンクを足す・直す・消す", text: "担当の先生は「編集する」を押し、編集用パスワードを入れると、リンクや区分を追加・変更・削除できます。変更は自動で保存され、全員の画面に反映されます。" },
+];
+let tourIndex = 0, tourSampled = false;
+function startTour() {
+  // データが無い・リンクが無いときは見本を使って案内する
+  if (!data || !data.sections.some(s => s.items.length)) { startSample(); tourSampled = true; }
+  if (editMode) { alert("編集中は案内を出せません。先に「編集を終える」を押してください。"); return; }
+  $("search").value = ""; render();
+  tourIndex = 0; showTourStep();
+}
+function showTourStep() {
+  document.querySelectorAll(".tour-hole, .tour-box").forEach(n => n.remove());
+  // 対象が無い説明(共有フォルダが無いときの「場所」など)は飛ばす
+  while (tourIndex < TOUR.length && !document.querySelector(TOUR[tourIndex].sel)) tourIndex++;
+  if (tourIndex >= TOUR.length) return endTour();
+  const step = TOUR[tourIndex];
+  const target = document.querySelector(step.sel);
+  target.scrollIntoView({ block: "center", behavior: "instant" });
+  const r = target.getBoundingClientRect();
+  const hole = el("div", { class: "tour-hole" });
+  Object.assign(hole.style, { left: r.left - 6 + "px", top: r.top - 6 + "px", width: r.width + 12 + "px", height: r.height + 12 + "px" });
+  const box = el("div", { class: "tour-box", role: "dialog", "aria-live": "polite" });
+  box.append(el("h4", {}, step.title), el("p", {}, step.text));
+  const visible = TOUR.filter(s => document.querySelector(s.sel));
+  const a = el("div", { class: "actions" });
+  a.append(el("span", { class: "step" }, `${visible.indexOf(step) + 1} / ${visible.length}`));
+  if (tourIndex > 0) a.append(button("戻る", "small", () => { do { tourIndex--; } while (tourIndex > 0 && !document.querySelector(TOUR[tourIndex].sel)); showTourStep(); }));
+  a.append(button("閉じる", "small", endTour));
+  a.append(button(tourIndex === TOUR.length - 1 ? "おわり" : "次へ", "small primary", () => { tourIndex++; showTourStep(); }));
+  box.append(a);
+  document.body.append(hole, box);
+  // 置き場所: 対象の下 → 上 → 右 → 左 の順に、重ならずに入る所を探す(どこにも入らなければ画面の下)
+  const bw = box.offsetWidth, bh = box.offsetHeight, W = window.innerWidth, H = window.innerHeight, gap = 14;
+  let top, left;
+  if (r.bottom + gap + bh <= H) { top = r.bottom + gap; left = r.left; }
+  else if (r.top - gap - bh >= 0) { top = r.top - gap - bh; left = r.left; }
+  else if (r.right + gap + bw <= W) { top = r.top; left = r.right + gap; }
+  else if (r.left - gap - bw >= 0) { top = r.top; left = r.left - gap - bw; }
+  else { top = H - bh - 12; left = r.left; }
+  top = Math.min(Math.max(12, top), H - bh - 12);
+  left = Math.min(Math.max(12, left), W - bw - 12);
+  Object.assign(box.style, { top: top + "px", left: left + "px" });
+  box.querySelector(".primary").focus();
+}
+function endTour() {
+  document.querySelectorAll(".tour-hole, .tour-box").forEach(n => n.remove());
+  storeSet(TOUR_KEY, "1");
+  if (tourSampled) { tourSampled = false; endSample(); }
+}
+$("btnTour").onclick = startTour;
+window.addEventListener("resize", () => { if (document.querySelector(".tour-box")) showTourStep(); });
+
+/* ---- 起動 ---- */
+data = window.PORTAL_DATA ? normalize(window.PORTAL_DATA) : null;
+render();
+// 初めて開いた人には、案内を一度だけ自動で出す
+if (data && !storeGet(TOUR_KEY)) setTimeout(startTour, 400);
+</script>
+</body>
+</html>
