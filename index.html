@@ -199,6 +199,10 @@
     width: 34px; height: 34px; border-radius: 50%; border: 2px solid transparent; cursor: pointer;
   }
   .color-pick button[aria-pressed="true"] { border-color: var(--ink); box-shadow: 0 0 0 2px var(--surface) inset; }
+  .pick-row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: -8px; }
+  .mode-pick { display: flex; gap: 18px; flex-wrap: wrap; }
+  .mode-pick label { font-weight: 400; font-size: 1rem; cursor: pointer; display: flex; align-items: center; gap: 4px; }
+  .field .mode-pick input { width: auto; margin: 0; }
   .preview { display: flex; gap: 12px; align-items: center; }
   .preview .icon { width: 56px; height: 56px; font-size: 30px; border-radius: 15px; }
 
@@ -370,6 +374,8 @@ function normalize(d) {
     for (const it of s.items) {
       it.id = it.id || uid(); it.name = it.name || "リンク"; it.desc = it.desc || "";
       it.url = it.url || ""; it.icon = it.icon || "🔗"; it.color = it.color || COLORS[0];
+      // ファイルのリンクを押したとき: "open"(開く)か "download"(ダウンロードする)
+      it.mode = it.mode === "download" ? "download" : "open";
     }
   }
   return d;
@@ -456,19 +462,56 @@ function changed() { render(); scheduleSave(); }
 //  ・https://… などはそのまま
 //  ・\\サーバー\共有\… や C:\… は file:/// の形に直す
 //  ・../leave-manager/index.html のような相対パスはそのまま(このページの場所から見た位置)
-function hrefOf(url) {
-  const u = (url || "").trim();
-  if (/^\\\\/.test(u)) return "file:" + u.replace(/\\/g, "/");
-  if (/^[A-Za-z]:\\/.test(u)) return "file:///" + u.replace(/\\/g, "/");
-  return u;
+//  ・日本語のキーボードで打つと区切りが「¥」「￥」になることがあるので、「\」に直してから扱う(normUrl)
+function normUrl(url) {
+  let u = (url || "").trim().replace(/^"(.*)"$/, "$1"); // エクスプローラーの「パスのコピー」は "…" で囲まれる
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(u) && !/^file:/i.test(u)) return u; // https:// など
+  u = u.replace(/[¥￥＼]/g, "\\");
+  u = u.replace(/^([A-Za-zＡ-Ｚａ-ｚ])[:：]/, (m, c) => String.fromCharCode(c.charCodeAt(0) > 0xff ? c.charCodeAt(0) - 0xfee0 : c.charCodeAt(0)).toUpperCase() + ":");
+  if (/^[A-Za-z]:[\\/]/.test(u) || /^[\\/]{2}[^\\/]/.test(u)) return u.replace(/\//g, "\\");
+  if (/^[A-Za-z]:$/.test(u)) return u + "\\";
+  return u.replace(/\\/g, "/"); // ../leave-manager/index.html のような相対パス
 }
-function isPath(url) { return /^\\\\|^[A-Za-z]:\\/.test((url || "").trim()); }
-function kindOf(url) {
-  const u = (url || "").trim();
-  if (isPath(u)) return "共有フォルダ・ファイル";
+function isPath(url) { return /^\\\\|^[A-Za-z]:\\/.test(normUrl(url)); }
+// \\サーバー\共有\… や Z:\… を file:// の形にする。# や空白が入っていても開けるように、区切りごとに符号化する。
+function fileUrlOf(path) {
+  const enc = s => s.split("\\").filter((x, i, a) => x !== "" || i === a.length - 1).map(encodeURIComponent).join("/");
+  if (path.startsWith("\\\\")) return "file://" + enc(path.slice(2));
+  return "file:///" + path.slice(0, 2) + "/" + enc(path.slice(3));
+}
+function hrefOf(url) {
+  const u = normUrl(url);
+  return isPath(u) ? fileUrlOf(u) : u;
+}
+// 最後の区切りのあとに拡張子(.xlsx など)があればファイル、なければフォルダとみなす。
+function extOf(url) { const m = /\.([A-Za-z0-9]{1,5})$/.exec(normUrl(url).replace(/[\\/]+$/, "")); return m ? m[1].toLowerCase() : ""; }
+function isFolder(url) { return isPath(url) && !extOf(url); }
+// 開く・ダウンロードを選べるファイルか(Z:\…\index.html のような校務アプリは、いつも新しいタブで開く)
+function isPlainFile(url) { return isPath(url) && !isFolder(url) && !/^html?$/.test(extOf(url)); }
+function kindOf(it) {
+  const u = normUrl(it.url);
+  if (isPath(u) && /^html?$/.test(extOf(u))) return "校務アプリ";
+  if (isPath(u)) return isFolder(u) ? "フォルダ" : it.mode === "download" ? "ファイル(ダウンロード)" : "ファイル";
   if (/^https?:/i.test(u)) return "Webサイト";
   if (u) return "校務アプリ";
   return "";
+}
+// 「開く」にしたファイルの開き方。ブラウザからエクスプローラーやアプリを直接起動することはできないので、できる範囲で開く。
+//  ・ブラウザで表示できるもの(PDF・画像など)→ 新しいタブで表示
+//  ・Excel・Word・PowerPoint → Office の「ms-excel:」などの形で、Office で開く(開いてよいかの確認が出ることがある)
+//  ・それ以外とフォルダ → 場所をコピーして、エクスプローラーで開いてもらう
+const VIEW_EXTS = ["pdf", "png", "jpg", "jpeg", "gif", "bmp", "webp", "svg", "txt", "htm", "html"];
+const OFFICE_SCHEMES = { xlsx: "ms-excel", xlsm: "ms-excel", xls: "ms-excel", docx: "ms-word", docm: "ms-word", doc: "ms-word", pptx: "ms-powerpoint", pptm: "ms-powerpoint", ppt: "ms-powerpoint" };
+function openWay(it) {
+  const u = normUrl(it.url);
+  if (!isPath(u)) return { href: hrefOf(u), newTab: true };
+  if (isFolder(u)) return { copy: true };
+  if (!isPlainFile(u)) return { href: fileUrlOf(u), newTab: true };
+  const ext = extOf(u);
+  if (it.mode === "download") return { href: fileUrlOf(u), download: u.split("\\").pop() };
+  if (VIEW_EXTS.includes(ext)) return { href: fileUrlOf(u), newTab: true };
+  if (OFFICE_SCHEMES[ext]) return { href: `${OFFICE_SCHEMES[ext]}:ofe|u|${fileUrlOf(u)}` };
+  return { copy: true };
 }
 
 function el(tag, attrs = {}, text) {
@@ -560,12 +603,21 @@ function iconEl(it) {
 }
 
 function tile(it, sec) {
-  const kind = kindOf(it.url);
+  const kind = kindOf(it);
   let t;
   if (editMode) {
     t = el("div", { class: "tile editing" });
   } else {
-    t = el("a", { class: "tile", href: hrefOf(it.url), target: "_blank", rel: "noopener", title: it.url });
+    const way = openWay(it);
+    if (way.copy) {
+      // フォルダなど、ブラウザでは開けないもの: 押すと場所をコピーする
+      t = el("a", { class: "tile", href: "#", title: normUrl(it.url) + "(押すと場所をコピーします)" });
+      t.onclick = e => { e.preventDefault(); copyText(normUrl(it.url)); };
+    } else {
+      t = el("a", { class: "tile", href: way.href, title: normUrl(it.url) });
+      if (way.newTab) { t.target = "_blank"; t.rel = "noopener"; }
+      if (way.download) t.setAttribute("download", way.download);
+    }
   }
   t.append(iconEl(it), el("div", { class: "name" }, it.name));
   if (it.desc) t.append(el("div", { class: "desc" }, it.desc));
@@ -573,7 +625,7 @@ function tile(it, sec) {
   // 共有フォルダは、ブラウザで開けない(または中身の一覧しか出ない)ことがあるので、場所をコピーできるようにする。
   if (!editMode && isPath(it.url)) {
     const c = el("button", { class: "copy", type: "button", title: "場所をコピーして、エクスプローラーのアドレス欄に貼り付けられます" }, "📋 場所");
-    c.onclick = e => { e.preventDefault(); e.stopPropagation(); copyText(it.url); };
+    c.onclick = e => { e.preventDefault(); e.stopPropagation(); copyText(normUrl(it.url)); };
     t.append(c);
   }
   if (editMode) {
@@ -648,7 +700,8 @@ function openDialog(build) {
   if (first) first.focus();
 }
 function closeDialog() { $("dialogOverlay").hidden = true; }
-$("dialogOverlay").addEventListener("click", e => { if (e.target.id === "dialogOverlay") closeDialog(); });
+// ウィンドウの外をクリックしても閉じない。文字を選ぼうとしてマウスが外に出ただけで、入力が消えてしまうため。
+// 閉じるときは「キャンセル」か Esc キー。
 document.addEventListener("keydown", e => { if (e.key === "Escape" && !$("dialogOverlay").hidden) closeDialog(); });
 
 function field(labelText, input, hint) {
@@ -688,11 +741,54 @@ function editItem(sec, item) {
       colorRow.append(b);
     });
     const err = el("p", { class: "error" }); err.hidden = true;
+    // リンク先を、共有サーバーの中から選ぶ(選ぶと上の欄に場所が入る。手で書いてもよい)
+    const pickRow = el("div", { class: "pick-row" });
+    const pick = async folder => {
+      err.hidden = true;
+      try {
+        const r = await pickLocation(folder);
+        if (!r) return;
+        url.value = r.url;
+        if (!name.value.trim()) { name.value = r.name; name.oninput(); }
+        updateMode();
+      } catch (e) {
+        if (e.name === "AbortError") return;
+        err.textContent = e.message; err.hidden = false;
+      }
+    };
+    pickRow.append(button("📄 ファイルを選ぶ", "small", () => pick(false)), button("📁 フォルダを選ぶ", "small", () => pick(true)));
+    // ファイルのリンクを押したときに、開くかダウンロードするか
+    const modeBox = el("div", { class: "field" });
+    const modeGroup = el("div", { class: "mode-pick", role: "radiogroup", "aria-label": "押したとき" });
+    const modeHint = el("div", { class: "hint" });
+    const mkRadio = (value, label) => {
+      const l = el("label");
+      const r = el("input", { type: "radio", name: "linkMode", value }); r.checked = it.mode === value || (value === "open" && it.mode !== "download");
+      r.onchange = updateMode;
+      l.append(r, " " + label); return l;
+    };
+    modeGroup.append(mkRadio("open", "開く"), mkRadio("download", "ダウンロードする"));
+    modeBox.append(el("label", {}, "ファイルを押したとき"), modeGroup, modeHint);
+    function updateMode() {
+      const u = normUrl(url.value);
+      modeBox.hidden = !isPlainFile(u);
+      if (modeBox.hidden) return;
+      const mode = modeGroup.querySelector("input:checked").value;
+      const way = openWay({ url: u, mode });
+      modeHint.textContent = mode === "download" ? "押すと、ファイルがダウンロード(パソコンに保存)されます。"
+        : way.copy ? "この種類のファイルはブラウザから開けないので、押すと場所がコピーされます。エクスプローラーのアドレス欄に貼り付けて開いてもらいます。"
+        : way.newTab ? "押すと、ブラウザの新しいタブで表示されます。"
+        : "押すと、Excel・Word などで開きます(開いてよいかの確認が出ることがあります)。";
+    }
+    url.oninput = updateMode;
+    updateMode();
     d.append(
       preview,
       field("名前(アイコンの下に出ます)", name),
       field("説明", desc, "何のためのリンクか、短く書きます(3行くらいまで表示されます)。"),
-      field("リンク先", url, "Webサイトは https://… 、共有フォルダは \\\\サーバー名\\共有\\… 、校務アプリは ../leave-manager/index.html のように書きます。"),
+      field("リンク先", url, "「ファイルを選ぶ」「フォルダを選ぶ」で選べます。Webサイトは https://… を貼り付けます。"),
+      pickRow,
+      modeBox,
     );
     const iconField = el("div", { class: "field" }); iconField.append(el("label", {}, "アイコン"), iconGrid);
     const colorField = el("div", { class: "field" }); colorField.append(el("label", {}, "色"), colorRow);
@@ -701,13 +797,81 @@ function editItem(sec, item) {
       button(isNew ? "追加する" : "保存する", "primary", () => {
         if (!name.value.trim()) { err.textContent = "名前を入れてください。"; err.hidden = false; name.focus(); return; }
         if (!url.value.trim()) { err.textContent = "リンク先を入れてください。"; err.hidden = false; url.focus(); return; }
-        const next = { ...it, name: name.value.trim(), desc: desc.value.trim(), url: url.value.trim() };
+        const next = { ...it, name: name.value.trim(), desc: desc.value.trim(), url: normUrl(url.value), mode: modeGroup.querySelector("input:checked").value };
         if (isNew) { next.id = uid(); sec.items.push(next); }
         else Object.assign(item, next);
         closeDialog(); changed(); toast(isNew ? "追加しました" : "保存しました");
       }),
     ));
   });
+}
+
+/* ---- リンク先を選ぶ ----
+   ブラウザは、選んだファイルの「Z:\…」「\\サーバー\…」という場所を教えてくれない(安全のため)。
+   そこで、共有サーバーの一番上のフォルダ(基準の場所)を一度だけ選んでもらい、その場所の書き方と一緒に覚えておく。
+   リンクにするファイルは、基準の場所から見た道筋(resolve)をつないで、場所の書き方を作る。
+   基準の場所は、このパソコンのブラウザに覚える(IndexedDB の baseFolder)。編集する人のパソコンごとに一度だけ選ぶ。 */
+function pageLocation() {
+  // このページ(index.html)の場所を、Z:\… や \\サーバー\… の形で返す。file:// で開いていなければ null。
+  if (location.protocol !== "file:") return null;
+  const p = decodeURIComponent(location.pathname);
+  if (location.host) return "\\\\" + location.host + p.replace(/\//g, "\\");
+  return p.replace(/^\//, "").replace(/\//g, "\\");
+}
+function joinPath(base, parts) {
+  if (!parts.length) return base;
+  return base.replace(/\\+$/, "") + "\\" + parts.join("\\");
+}
+async function registerBaseFolder() {
+  alert("最初の1回だけ、共有サーバーの一番上のフォルダ(Z ドライブなど)を選びます。\nリンクにするファイルやフォルダは、このフォルダの中から選べるようになります。\n\n次の画面でフォルダを選び、「フォルダーの選択」を押してください。");
+  const dir = await window.showDirectoryPicker({ startIn: fileHandle || "documents" });
+  let path = "";
+  // このページが選んだフォルダの中にあれば、ページの場所から、選んだフォルダの書き方が分かる
+  const page = pageLocation();
+  const parts = fileHandle ? await dir.resolve(fileHandle) : null; // 例: ["校務", "portal", "links-data.js"]
+  if (page && parts) {
+    const segs = page.split("\\"); segs.pop();             // index.html を除く
+    const dirs = parts.slice(0, -1);                        // links-data.js を除く
+    const tail = segs.slice(segs.length - dirs.length);
+    if (tail.every((s, i) => s.toLowerCase() === dirs[i].toLowerCase())) {
+      const head = segs.slice(0, segs.length - dirs.length).join("\\");
+      path = /^[A-Za-z]:$/.test(head) ? head + "\\" : head;
+    }
+  }
+  if (!path) {
+    const ans = prompt("選んだフォルダの場所を書いてください。\n(エクスプローラーのアドレス欄に出ている書き方です。例: Z:\\ や \\\\サーバー名\\共有)", "");
+    if (ans === null) return false;
+    path = normUrl(ans);
+    if (!isPath(path)) { alert("場所の書き方が違います。Z:\\ や \\\\サーバー名\\共有 のように書いてください。"); return false; }
+  }
+  await idbSet("baseFolder", { path, handle: dir });
+  return path;
+}
+async function pickLocation(folder) {
+  if (!("showDirectoryPicker" in window)) throw new Error("このブラウザでは選べません。Google Chrome か Microsoft Edge で開いてください。");
+  const base = await idbGet("baseFolder");
+  if (!base) {
+    const path = await registerBaseFolder();
+    if (path) alert(`「${path}」を、選ぶときの場所として登録しました。\nもう一度「${folder ? "📁 フォルダを選ぶ" : "📄 ファイルを選ぶ"}」を押して、リンクにするものを選んでください。`);
+    return null;
+  }
+  const h = folder ? await window.showDirectoryPicker({ startIn: base.handle })
+                   : (await window.showOpenFilePicker({ startIn: base.handle }))[0];
+  const parts = await base.handle.resolve(h);
+  if (!parts) throw new Error(`選んだ${folder ? "フォルダ" : "ファイル"}は、登録した場所(${base.path})の中にありません。この場所の中から選んでください。別の場所から選ぶときは「⚙ 設定・バックアップ」で場所を登録し直してください。`);
+  // 名前の欄が空なら、ファイル名を入れる(index.html なら、入っているフォルダの名前)
+  const name = folder ? h.name : /^index\.html?$/i.test(h.name) && parts.length > 1 ? parts[parts.length - 2] : h.name.replace(/\.[^.]+$/, "");
+  // 校務アプリ(.html)は、このページから見た位置(../leave-manager/index.html など)にする。
+  // ドライブの文字(Z: など)がパソコンによって違っても開けるように。
+  if (!folder && /\.html?$/i.test(h.name) && fileHandle) {
+    const me = await base.handle.resolve(fileHandle);
+    if (me) {
+      const from = me.slice(0, -1); let i = 0;
+      while (i < from.length && i < parts.length - 1 && from[i] === parts[i]) i++;
+      return { url: "../".repeat(from.length - i) + parts.slice(i).join("/"), name };
+    }
+  }
+  return { url: joinPath(base.path, parts), name };
 }
 
 function deleteItem(sec, idx) {
@@ -824,6 +988,8 @@ $("btnSettings").onclick = () => openDialog(d => {
   const pw1 = el("input", { type: "password", autocomplete: "new-password" });
   const pw2 = el("input", { type: "password", autocomplete: "new-password" });
   const err = el("p", { class: "error" }); err.hidden = true;
+  const baseInfo = el("p", { class: "hint" }, "まだ登録していません。リンクを追加するときに「📄 ファイルを選ぶ」を押すと、登録の案内が出ます。");
+  idbGet("baseFolder").then(b => { if (b) baseInfo.textContent = `このパソコンでは「${b.path}」の中から選びます。`; });
   d.append(
     field("ページの名前", title),
     field("説明(名前の下に小さく出ます)", sub, "例：〇〇中学校 職員用"),
@@ -839,6 +1005,13 @@ $("btnSettings").onclick = () => openDialog(d => {
       data.title = title.value.trim() || "校務ポータル";
       data.subtitle = sub.value.trim();
       closeDialog(); changed(); toast("保存しました");
+    })),
+    el("hr"),
+    el("h3", {}, "リンク先を選ぶときの場所"),
+    baseInfo,
+    actions(button("場所を登録し直す", "", async () => {
+      try { const p = await registerBaseFolder(); if (p) { baseInfo.textContent = `このパソコンでは「${p}」の中から選びます。`; toast("登録しました"); } }
+      catch (e) { if (e.name !== "AbortError") alert("登録できませんでした。\n" + e.message); }
     })),
     el("hr"),
     el("h3", {}, "バックアップと復元"),
@@ -913,6 +1086,8 @@ function sampleData() {
       { name: "共有フォルダ", items: [
         { name: "職員共有", desc: "学年・分掌ごとのフォルダ。年度のフォルダの中に入れる", url: "\\\\example-server\\share\\職員共有", icon: "📂", color: COLORS[6] },
         { name: "様式集", desc: "出張・休暇・各種届の様式(最新版はここ)", url: "\\\\example-server\\share\\様式集", icon: "🗂️", color: COLORS[7] },
+        { name: "出張届", desc: "押すとダウンロードされます(Excel)", url: "\\\\example-server\\share\\様式集\\出張届.xlsx", mode: "download", icon: "🧾", color: COLORS[1] },
+        { name: "年間行事予定表", desc: "押すとブラウザで表示されます(PDF)", url: "\\\\example-server\\share\\様式集\\年間行事予定表.pdf", icon: "📅", color: COLORS[3] },
       ]},
       { name: "Webサイト", items: [
         { name: "文部科学省", desc: "学習指導要領・通知など", url: "https://www.mext.go.jp/", icon: "🌐", color: COLORS[5] },
@@ -935,7 +1110,7 @@ $("btnEndSample").onclick = endSample;
 
 const TOUR = [
   { sel: "#main .tile", title: "アイコンを押すと開きます", text: "アイコンを押すと、そのアプリ・フォルダ・Webサイトが新しいタブで開きます。名前の下に、何のためのリンクかの説明があります。" },
-  { sel: "#main .tile .copy", title: "共有フォルダの場所をコピー", text: "共有フォルダは、ブラウザで開けないことがあります。そのときは「📋 場所」を押して、エクスプローラーのアドレス欄に貼り付けてください。" },
+  { sel: "#main .tile .copy", title: "共有フォルダの場所をコピー", text: "共有フォルダはブラウザから開けないので、アイコンを押すと場所がコピーされます。エクスプローラーのアドレス欄に貼り付けて開いてください。ファイルも「📋 場所」で場所をコピーできます。" },
   { sel: "#search", title: "さがす", text: "名前や説明の一部を入れると、当てはまるリンクだけが表示されます。" },
   { sel: "#btnReload", title: "最新にする", text: "ほかの先生がリンクを直したときは、このボタンで最新の内容が表示されます。" },
   { sel: "#btnEdit", title: "リンクを足す・直す・消す", text: "担当の先生は「編集する」を押し、編集用パスワードを入れると、リンクや区分を追加・変更・削除できます。変更は自動で保存され、全員の画面に反映されます。" },
