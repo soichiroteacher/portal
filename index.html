@@ -8,7 +8,7 @@
 ============================================================
  校務ポータル
 ------------------------------------------------------------
- ・職員がよく使う校務アプリ・共有フォルダ・Webサイトへのリンクを、
+ ・職員がよく使う校務アプリ・共有サーバーのファイル(様式など)・Webサイトへのリンクを、
    スマートフォンのホーム画面のようにアイコンで並べるページ。
  ・校務共有サーバーに置き、各職員のデスクトップにショートカットを置いて使う。
  ・リンクのデータは、同じフォルダの links-data.js に入っている。
@@ -291,14 +291,6 @@
 const DEFAULT_PASSWORD = "0000";
 // 編集中の印が、この時間より古ければ「閉じ忘れ」とみなして無視する(ミリ秒)。
 const EDIT_LOCK_STALE_MS = 15 * 60 * 1000;
-// フォルダのアイコンを押したときの動き。
-//  "explorer": エクスプローラーの窓で開く(Windows の検索の仕組みを使う。「開きますか?」の確認が出る。
-//              窓の上には「検索結果」と出る。ファイルはダブルクリックでサーバーの元のファイルが開く。
-//              サブフォルダの中のファイルまで並ぶことがある。2026-10-28 時点で学校のパソコンでは未確認)
-//  "browser" : ブラウザの新しいタブに、フォルダの中身の一覧を出す(ファイルは押すとダウンロード)
-//  "copy"    : 場所をコピーするだけ(エクスプローラーのアドレス欄に貼り付けてもらう)
-// 学校のパソコンで "explorer" が開かないときは "browser" に変える。
-const FOLDER_OPEN_WAY = "explorer";
 // アイコンの候補(絵文字)。足したいときはここに書き足す。
 const ICONS = ["🏫","📅","🗓️","📝","✏️","📊","📈","📁","📂","🗂️","🗃️","📋","📌","📎","📚","📖","🧑‍🏫","👩‍🏫","🧑‍🎓","👥","🔑","🔒","💻","🖥️","🖨️","📱","🌐","🔗","📧","📮","📞","📢","⚙️","🛠️","🧮","🧾","💴","🏆","🏥","🍱","🚌","⚽","🎵","🎨","🔬","🌸","🧹","⏰","🕒","⚠️","❓","ℹ️","⭐","🏠"];
 // アイコンの背景色の候補(白黒で印刷することはないので、色で区別してよい)。
@@ -317,7 +309,7 @@ function initialSections() {
       { id: uid(), name: "アカウント管理", desc: "生徒のアカウントとタブレット端末", url: "../account-manager/index.html", icon: "🔑", color: COLORS[7] },
       { id: uid(), name: "フォルダ容量ビューア", desc: "フォルダの容量を大きい順に表示(.exe)", url: "../folder-size-viewer/dist/", icon: "📁", color: COLORS[6] },
     ]},
-    { id: uid(), name: "共有フォルダ", items: [] },
+    { id: uid(), name: "様式", items: [] },
     { id: uid(), name: "Webサイト", items: [] },
   ];
 }
@@ -502,25 +494,17 @@ function kindOf(it) {
   if (u) return "校務アプリ";
   return "";
 }
-// エクスプローラーでフォルダを開くための形(Windows の検索の仕組み search-ms: を使う)。
-// 場所は URL の形に符号化して渡す(エクスプローラーが日本語に戻してくれる)。
-function explorerUrlOf(path) {
-  const name = path.replace(/\\+$/, "").split("\\").pop() || path;
-  return `search-ms:displayname=${encodeURIComponent(name)}&crumb=location:${encodeURIComponent(path)}`;
-}
 // 押したときの動き。
 //  ・ファイル → ダウンロード(ブラウザから Word・Excel で直接開く方法は、場所に日本語が入ると開けなかったため。
 //    ブラウザが日本語を %E6… に置き換え、Word がそれを戻さずに探して「見つかりません」になる。2026-10-28 に確かめた)
-//  ・フォルダ → 設定欄の FOLDER_OPEN_WAY のとおり
+//  ・フォルダ → 開かない(場所をコピーするだけ)。ブラウザからエクスプローラーを開く方法(search-ms:)は、
+//    学校のパソコンで検索の窓が開くだけで、フォルダの中まで進めなかった(2026-10-28)。ユーザーと相談して、
+//    フォルダを開く機能はなくし、リンクはファイル(ダウンロード)だけにした。古いデータのフォルダのリンクは場所のコピーになる。
 //  ・校務アプリ・Webサイト → 新しいタブ
 function openWay(it) {
   const u = normUrl(it.url);
   if (!isPath(u)) return { href: hrefOf(u), newTab: true };
-  if (isFolder(u)) {
-    if (FOLDER_OPEN_WAY === "explorer") return { href: explorerUrlOf(u) };
-    if (FOLDER_OPEN_WAY === "browser") return { href: fileUrlOf(u), newTab: true };
-    return { copy: true };
-  }
+  if (isFolder(u)) return { copy: true };
   if (!isPlainFile(u)) return { href: fileUrlOf(u), newTab: true };
   return { href: fileUrlOf(u), download: u.split("\\").pop() };
 }
@@ -633,7 +617,7 @@ function tile(it, sec) {
   t.append(iconEl(it), el("div", { class: "name" }, it.name));
   if (it.desc) t.append(el("div", { class: "desc" }, it.desc));
   if (kind) t.append(el("span", { class: "kind" }, kind));
-  // 共有フォルダは、ブラウザで開けない(または中身の一覧しか出ない)ことがあるので、場所をコピーできるようにする。
+  // 共有サーバーのファイルには、サーバーのどこにあるかをコピーするボタンを付ける(エクスプローラーで探すとき用)。
   if (!editMode && isPath(it.url)) {
     const c = el("button", { class: "copy", type: "button", title: "場所をコピーして、エクスプローラーのアドレス欄に貼り付けられます" }, "📋 場所");
     c.onclick = e => { e.preventDefault(); e.stopPropagation(); copyText(normUrl(it.url)); };
@@ -754,10 +738,10 @@ function editItem(sec, item) {
     const err = el("p", { class: "error" }); err.hidden = true;
     // リンク先を、共有サーバーの中から選ぶ(選ぶと上の欄に場所が入る。手で書いてもよい)
     const pickRow = el("div", { class: "pick-row" });
-    const pick = async folder => {
+    const pick = async () => {
       err.hidden = true;
       try {
-        const r = await pickLocation(folder);
+        const r = await pickLocation();
         if (!r) return;
         url.value = r.url;
         if (!name.value.trim()) { name.value = r.name; name.oninput(); }
@@ -767,7 +751,7 @@ function editItem(sec, item) {
         err.textContent = e.message; err.hidden = false;
       }
     };
-    pickRow.append(button("📄 ファイルを選ぶ", "small", () => pick(false)), button("📁 フォルダを選ぶ", "small", () => pick(true)));
+    pickRow.append(button("📄 ファイルを選ぶ", "small", () => pick()));
     // アイコンを押したときにどうなるかを、リンク先の下に出す
     const modeHint = el("p", { class: "hint way-hint" });
     function updateMode() {
@@ -775,9 +759,7 @@ function editItem(sec, item) {
       const way = openWay({ url: u });
       modeHint.textContent = !u ? ""
         : way.download ? "押すと、ファイルがダウンロードされます。画面の右上に出るファイル名を押すと開きます(パソコンに保存された写しが開きます)。"
-        : isFolder(u) && FOLDER_OPEN_WAY === "explorer" ? "押すと、エクスプローラーでフォルダが開きます(開いてよいかの確認が出ます)。"
-        : isFolder(u) && FOLDER_OPEN_WAY === "browser" ? "押すと、ブラウザの新しいタブにフォルダの中身が出ます。"
-        : way.copy ? "押すと、フォルダの場所がコピーされます。"
+        : way.copy ? "フォルダはブラウザから開けません。押しても、フォルダの場所がコピーされるだけです。ファイルを選んでください。"
         : "押すと、新しいタブで開きます。";
     }
     url.oninput = updateMode;
@@ -786,7 +768,7 @@ function editItem(sec, item) {
       preview,
       field("名前(アイコンの下に出ます)", name),
       field("説明", desc, "何のためのリンクか、短く書きます(3行くらいまで表示されます)。"),
-      field("リンク先", url, "「ファイルを選ぶ」「フォルダを選ぶ」で選べます。Webサイトは https://… を貼り付けます。"),
+      field("リンク先", url, "共有サーバーのファイルや校務アプリは「ファイルを選ぶ」で選べます。Webサイトは https://… を貼り付けます。"),
       pickRow,
       modeHint,
     );
@@ -847,23 +829,22 @@ async function registerBaseFolder() {
   await idbSet("baseFolder", { path, handle: dir });
   return path;
 }
-async function pickLocation(folder) {
+async function pickLocation() {
   if (!("showDirectoryPicker" in window)) throw new Error("このブラウザでは選べません。Google Chrome か Microsoft Edge で開いてください。");
   const base = await idbGet("baseFolder");
   if (!base) {
     const path = await registerBaseFolder();
-    if (path) alert(`「${path}」を、選ぶときの場所として登録しました。\nもう一度「${folder ? "📁 フォルダを選ぶ" : "📄 ファイルを選ぶ"}」を押して、リンクにするものを選んでください。`);
+    if (path) alert(`「${path}」を、選ぶときの場所として登録しました。\nもう一度「📄 ファイルを選ぶ」を押して、リンクにするファイルを選んでください。`);
     return null;
   }
-  const h = folder ? await window.showDirectoryPicker({ startIn: base.handle })
-                   : (await window.showOpenFilePicker({ startIn: base.handle }))[0];
+  const [h] = await window.showOpenFilePicker({ startIn: base.handle });
   const parts = await base.handle.resolve(h);
-  if (!parts) throw new Error(`選んだ${folder ? "フォルダ" : "ファイル"}は、登録した場所(${base.path})の中にありません。この場所の中から選んでください。別の場所から選ぶときは「⚙ 設定・バックアップ」で場所を登録し直してください。`);
+  if (!parts) throw new Error(`選んだファイルは、登録した場所(${base.path})の中にありません。この場所の中から選んでください。別の場所から選ぶときは「⚙ 設定・バックアップ」で場所を登録し直してください。`);
   // 名前の欄が空なら、ファイル名を入れる(index.html なら、入っているフォルダの名前)
-  const name = folder ? h.name : /^index\.html?$/i.test(h.name) && parts.length > 1 ? parts[parts.length - 2] : h.name.replace(/\.[^.]+$/, "");
+  const name = /^index\.html?$/i.test(h.name) && parts.length > 1 ? parts[parts.length - 2] : h.name.replace(/\.[^.]+$/, "");
   // 校務アプリ(.html)は、このページから見た位置(../leave-manager/index.html など)にする。
   // ドライブの文字(Z: など)がパソコンによって違っても開けるように。
-  if (!folder && /\.html?$/i.test(h.name) && fileHandle) {
+  if (/\.html?$/i.test(h.name) && fileHandle) {
     const me = await base.handle.resolve(fileHandle);
     if (me) {
       const from = me.slice(0, -1); let i = 0;
@@ -894,7 +875,7 @@ function editSection(sec) {
     d.append(el("h3", {}, sec ? "区分の名前を変える" : "区分を追加"));
     const name = el("input", { type: "text", maxlength: "30" }); name.value = sec ? sec.name : "";
     const err = el("p", { class: "error" }); err.hidden = true;
-    d.append(field("区分の名前", name, "例：校務アプリ、共有フォルダ、Webサイト、様式・マニュアル"), err, actions(
+    d.append(field("区分の名前", name, "例：校務アプリ、様式、Webサイト、マニュアル"), err, actions(
       button("キャンセル", "", closeDialog),
       button(sec ? "保存する" : "追加する", "primary", () => {
         if (!name.value.trim()) { err.textContent = "名前を入れてください。"; err.hidden = false; return; }
@@ -1083,10 +1064,10 @@ function sampleData() {
         { name: "マークシート採点", desc: "スキャンした解答用紙を自動で採点", url: "../marksheet-grader/index.html", icon: "📝", color: COLORS[2] },
         { name: "定期テスト", desc: "日程・監督表・配慮生徒・印刷物", url: "../exam-manager/index.html", icon: "📋", color: COLORS[3] },
       ]},
-      { name: "共有フォルダ", items: [
-        { name: "職員共有", desc: "学年・分掌ごとのフォルダ。年度のフォルダの中に入れる", url: "\\\\example-server\\share\\職員共有", icon: "📂", color: COLORS[6] },
-        { name: "様式集", desc: "出張・休暇・各種届の様式(最新版はここ)", url: "\\\\example-server\\share\\様式集", icon: "🗂️", color: COLORS[7] },
-        { name: "出張届", desc: "押すとダウンロードされます(Excel)", url: "\\\\example-server\\share\\様式集\\出張届.xlsx", icon: "🧾", color: COLORS[1] },
+      { name: "様式", items: [
+        { name: "出張届", desc: "出張の前に提出(Excel)", url: "\\\\example-server\\share\\様式集\\出張届.xlsx", icon: "🧾", color: COLORS[1] },
+        { name: "休暇届", desc: "年休以外の休暇のとき(Word)", url: "\\\\example-server\\share\\様式集\\休暇届.docx", icon: "📝", color: COLORS[6] },
+        { name: "職員会議の資料のひな形", desc: "提案するときはこの形で(Word)", url: "\\\\example-server\\share\\様式集\\職員会議_ひな形.docx", icon: "📋", color: COLORS[7] },
       ]},
       { name: "Webサイト", items: [
         { name: "文部科学省", desc: "学習指導要領・通知など", url: "https://www.mext.go.jp/", icon: "🌐", color: COLORS[5] },
@@ -1109,7 +1090,7 @@ $("btnEndSample").onclick = endSample;
 
 const TOUR = [
   { sel: "#main .tile", title: "アイコンを押すと開きます", text: "アイコンを押すと、そのアプリ・フォルダ・Webサイトが新しいタブで開きます。名前の下に、何のためのリンクかの説明があります。" },
-  { sel: "#main .tile .copy", title: "共有フォルダとファイル", text: "フォルダのアイコンを押すと、エクスプローラーで開きます(「開きますか?」と出たら「開く」を押します)。ファイルのアイコンを押すとダウンロードされ、画面の右上に出るファイル名を押すと開きます。「📋 場所」で場所をコピーすることもできます。" },
+  { sel: "#main .tile .copy", title: "ファイルはダウンロード", text: "様式などのファイルのアイコンを押すと、ダウンロードされます。画面の右上に出るファイル名を押すと開きます(パソコンに保存された写しです)。「📋 場所」を押すと、サーバーのどこにあるかをコピーできます。" },
   { sel: "#search", title: "さがす", text: "名前や説明の一部を入れると、当てはまるリンクだけが表示されます。" },
   { sel: "#btnReload", title: "最新にする", text: "ほかの先生がリンクを直したときは、このボタンで最新の内容が表示されます。" },
   { sel: "#btnEdit", title: "リンクを足す・直す・消す", text: "担当の先生は「編集する」を押し、編集用パスワードを入れると、リンクや区分を追加・変更・削除できます。変更は自動で保存され、全員の画面に反映されます。" },
@@ -1124,7 +1105,7 @@ function startTour() {
 }
 function showTourStep() {
   document.querySelectorAll(".tour-hole, .tour-box").forEach(n => n.remove());
-  // 対象が無い説明(共有フォルダが無いときの「場所」など)は飛ばす
+  // 対象が無い説明(ファイルのリンクが無いときの「場所」など)は飛ばす
   while (tourIndex < TOUR.length && !document.querySelector(TOUR[tourIndex].sel)) tourIndex++;
   if (tourIndex >= TOUR.length) return endTour();
   const step = TOUR[tourIndex];
