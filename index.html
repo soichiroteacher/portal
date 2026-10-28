@@ -200,9 +200,8 @@
   }
   .color-pick button[aria-pressed="true"] { border-color: var(--ink); box-shadow: 0 0 0 2px var(--surface) inset; }
   .pick-row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: -8px; }
-  .mode-pick { display: flex; gap: 18px; flex-wrap: wrap; }
-  .mode-pick label { font-weight: 400; font-size: 1rem; cursor: pointer; display: flex; align-items: center; gap: 4px; }
-  .field .mode-pick input { width: auto; margin: 0; }
+  .way-hint { margin: -6px 0 0; background: var(--accent-soft); border-radius: 8px; padding: 6px 10px; color: var(--ink); }
+  .way-hint:empty { display: none; }
   .preview { display: flex; gap: 12px; align-items: center; }
   .preview .icon { width: 56px; height: 56px; font-size: 30px; border-radius: 15px; }
 
@@ -292,6 +291,14 @@
 const DEFAULT_PASSWORD = "0000";
 // 編集中の印が、この時間より古ければ「閉じ忘れ」とみなして無視する(ミリ秒)。
 const EDIT_LOCK_STALE_MS = 15 * 60 * 1000;
+// フォルダのアイコンを押したときの動き。
+//  "explorer": エクスプローラーの窓で開く(Windows の検索の仕組みを使う。「開きますか?」の確認が出る。
+//              窓の上には「検索結果」と出る。ファイルはダブルクリックでサーバーの元のファイルが開く。
+//              サブフォルダの中のファイルまで並ぶことがある。2026-10-28 時点で学校のパソコンでは未確認)
+//  "browser" : ブラウザの新しいタブに、フォルダの中身の一覧を出す(ファイルは押すとダウンロード)
+//  "copy"    : 場所をコピーするだけ(エクスプローラーのアドレス欄に貼り付けてもらう)
+// 学校のパソコンで "explorer" が開かないときは "browser" に変える。
+const FOLDER_OPEN_WAY = "explorer";
 // アイコンの候補(絵文字)。足したいときはここに書き足す。
 const ICONS = ["🏫","📅","🗓️","📝","✏️","📊","📈","📁","📂","🗂️","🗃️","📋","📌","📎","📚","📖","🧑‍🏫","👩‍🏫","🧑‍🎓","👥","🔑","🔒","💻","🖥️","🖨️","📱","🌐","🔗","📧","📮","📞","📢","⚙️","🛠️","🧮","🧾","💴","🏆","🏥","🍱","🚌","⚽","🎵","🎨","🔬","🌸","🧹","⏰","🕒","⚠️","❓","ℹ️","⭐","🏠"];
 // アイコンの背景色の候補(白黒で印刷することはないので、色で区別してよい)。
@@ -374,8 +381,7 @@ function normalize(d) {
     for (const it of s.items) {
       it.id = it.id || uid(); it.name = it.name || "リンク"; it.desc = it.desc || "";
       it.url = it.url || ""; it.icon = it.icon || "🔗"; it.color = it.color || COLORS[0];
-      // ファイルのリンクを押したとき: "open"(開く)か "download"(ダウンロードする)
-      it.mode = it.mode === "download" ? "download" : "open";
+      delete it.mode; // 2026-10-27 の版にあった「開く・ダウンロード」の選択。今はファイルはいつもダウンロード
     }
   }
   return d;
@@ -486,32 +492,37 @@ function hrefOf(url) {
 // 最後の区切りのあとに拡張子(.xlsx など)があればファイル、なければフォルダとみなす。
 function extOf(url) { const m = /\.([A-Za-z0-9]{1,5})$/.exec(normUrl(url).replace(/[\\/]+$/, "")); return m ? m[1].toLowerCase() : ""; }
 function isFolder(url) { return isPath(url) && !extOf(url); }
-// 開く・ダウンロードを選べるファイルか(Z:\…\index.html のような校務アプリは、いつも新しいタブで開く)
+// ファイルか(Z:\…\index.html のような校務アプリは、ファイルではなく、いつも新しいタブで開く)
 function isPlainFile(url) { return isPath(url) && !isFolder(url) && !/^html?$/.test(extOf(url)); }
 function kindOf(it) {
   const u = normUrl(it.url);
   if (isPath(u) && /^html?$/.test(extOf(u))) return "校務アプリ";
-  if (isPath(u)) return isFolder(u) ? "フォルダ" : it.mode === "download" ? "ファイル(ダウンロード)" : "ファイル";
+  if (isPath(u)) return isFolder(u) ? "フォルダ" : "ファイル(ダウンロード)";
   if (/^https?:/i.test(u)) return "Webサイト";
   if (u) return "校務アプリ";
   return "";
 }
-// 「開く」にしたファイルの開き方。ブラウザからエクスプローラーやアプリを直接起動することはできないので、できる範囲で開く。
-//  ・ブラウザで表示できるもの(PDF・画像など)→ 新しいタブで表示
-//  ・Excel・Word・PowerPoint → Office の「ms-excel:」などの形で、Office で開く(開いてよいかの確認が出ることがある)
-//  ・それ以外とフォルダ → 場所をコピーして、エクスプローラーで開いてもらう
-const VIEW_EXTS = ["pdf", "png", "jpg", "jpeg", "gif", "bmp", "webp", "svg", "txt", "htm", "html"];
-const OFFICE_SCHEMES = { xlsx: "ms-excel", xlsm: "ms-excel", xls: "ms-excel", docx: "ms-word", docm: "ms-word", doc: "ms-word", pptx: "ms-powerpoint", pptm: "ms-powerpoint", ppt: "ms-powerpoint" };
+// エクスプローラーでフォルダを開くための形(Windows の検索の仕組み search-ms: を使う)。
+// 場所は URL の形に符号化して渡す(エクスプローラーが日本語に戻してくれる)。
+function explorerUrlOf(path) {
+  const name = path.replace(/\\+$/, "").split("\\").pop() || path;
+  return `search-ms:displayname=${encodeURIComponent(name)}&crumb=location:${encodeURIComponent(path)}`;
+}
+// 押したときの動き。
+//  ・ファイル → ダウンロード(ブラウザから Word・Excel で直接開く方法は、場所に日本語が入ると開けなかったため。
+//    ブラウザが日本語を %E6… に置き換え、Word がそれを戻さずに探して「見つかりません」になる。2026-10-28 に確かめた)
+//  ・フォルダ → 設定欄の FOLDER_OPEN_WAY のとおり
+//  ・校務アプリ・Webサイト → 新しいタブ
 function openWay(it) {
   const u = normUrl(it.url);
   if (!isPath(u)) return { href: hrefOf(u), newTab: true };
-  if (isFolder(u)) return { copy: true };
+  if (isFolder(u)) {
+    if (FOLDER_OPEN_WAY === "explorer") return { href: explorerUrlOf(u) };
+    if (FOLDER_OPEN_WAY === "browser") return { href: fileUrlOf(u), newTab: true };
+    return { copy: true };
+  }
   if (!isPlainFile(u)) return { href: fileUrlOf(u), newTab: true };
-  const ext = extOf(u);
-  if (it.mode === "download") return { href: fileUrlOf(u), download: u.split("\\").pop() };
-  if (VIEW_EXTS.includes(ext)) return { href: fileUrlOf(u), newTab: true };
-  if (OFFICE_SCHEMES[ext]) return { href: `${OFFICE_SCHEMES[ext]}:ofe|u|${fileUrlOf(u)}` };
-  return { copy: true };
+  return { href: fileUrlOf(u), download: u.split("\\").pop() };
 }
 
 function el(tag, attrs = {}, text) {
@@ -757,28 +768,17 @@ function editItem(sec, item) {
       }
     };
     pickRow.append(button("📄 ファイルを選ぶ", "small", () => pick(false)), button("📁 フォルダを選ぶ", "small", () => pick(true)));
-    // ファイルのリンクを押したときに、開くかダウンロードするか
-    const modeBox = el("div", { class: "field" });
-    const modeGroup = el("div", { class: "mode-pick", role: "radiogroup", "aria-label": "押したとき" });
-    const modeHint = el("div", { class: "hint" });
-    const mkRadio = (value, label) => {
-      const l = el("label");
-      const r = el("input", { type: "radio", name: "linkMode", value }); r.checked = it.mode === value || (value === "open" && it.mode !== "download");
-      r.onchange = updateMode;
-      l.append(r, " " + label); return l;
-    };
-    modeGroup.append(mkRadio("open", "開く"), mkRadio("download", "ダウンロードする"));
-    modeBox.append(el("label", {}, "ファイルを押したとき"), modeGroup, modeHint);
+    // アイコンを押したときにどうなるかを、リンク先の下に出す
+    const modeHint = el("p", { class: "hint way-hint" });
     function updateMode() {
       const u = normUrl(url.value);
-      modeBox.hidden = !isPlainFile(u);
-      if (modeBox.hidden) return;
-      const mode = modeGroup.querySelector("input:checked").value;
-      const way = openWay({ url: u, mode });
-      modeHint.textContent = mode === "download" ? "押すと、ファイルがダウンロード(パソコンに保存)されます。"
-        : way.copy ? "この種類のファイルはブラウザから開けないので、押すと場所がコピーされます。エクスプローラーのアドレス欄に貼り付けて開いてもらいます。"
-        : way.newTab ? "押すと、ブラウザの新しいタブで表示されます。"
-        : "押すと、Excel・Word などで開きます(開いてよいかの確認が出ることがあります)。";
+      const way = openWay({ url: u });
+      modeHint.textContent = !u ? ""
+        : way.download ? "押すと、ファイルがダウンロードされます。画面の右上に出るファイル名を押すと開きます(パソコンに保存された写しが開きます)。"
+        : isFolder(u) && FOLDER_OPEN_WAY === "explorer" ? "押すと、エクスプローラーでフォルダが開きます(開いてよいかの確認が出ます)。"
+        : isFolder(u) && FOLDER_OPEN_WAY === "browser" ? "押すと、ブラウザの新しいタブにフォルダの中身が出ます。"
+        : way.copy ? "押すと、フォルダの場所がコピーされます。"
+        : "押すと、新しいタブで開きます。";
     }
     url.oninput = updateMode;
     updateMode();
@@ -788,7 +788,7 @@ function editItem(sec, item) {
       field("説明", desc, "何のためのリンクか、短く書きます(3行くらいまで表示されます)。"),
       field("リンク先", url, "「ファイルを選ぶ」「フォルダを選ぶ」で選べます。Webサイトは https://… を貼り付けます。"),
       pickRow,
-      modeBox,
+      modeHint,
     );
     const iconField = el("div", { class: "field" }); iconField.append(el("label", {}, "アイコン"), iconGrid);
     const colorField = el("div", { class: "field" }); colorField.append(el("label", {}, "色"), colorRow);
@@ -797,7 +797,7 @@ function editItem(sec, item) {
       button(isNew ? "追加する" : "保存する", "primary", () => {
         if (!name.value.trim()) { err.textContent = "名前を入れてください。"; err.hidden = false; name.focus(); return; }
         if (!url.value.trim()) { err.textContent = "リンク先を入れてください。"; err.hidden = false; url.focus(); return; }
-        const next = { ...it, name: name.value.trim(), desc: desc.value.trim(), url: normUrl(url.value), mode: modeGroup.querySelector("input:checked").value };
+        const next = { ...it, name: name.value.trim(), desc: desc.value.trim(), url: normUrl(url.value) };
         if (isNew) { next.id = uid(); sec.items.push(next); }
         else Object.assign(item, next);
         closeDialog(); changed(); toast(isNew ? "追加しました" : "保存しました");
@@ -1086,8 +1086,7 @@ function sampleData() {
       { name: "共有フォルダ", items: [
         { name: "職員共有", desc: "学年・分掌ごとのフォルダ。年度のフォルダの中に入れる", url: "\\\\example-server\\share\\職員共有", icon: "📂", color: COLORS[6] },
         { name: "様式集", desc: "出張・休暇・各種届の様式(最新版はここ)", url: "\\\\example-server\\share\\様式集", icon: "🗂️", color: COLORS[7] },
-        { name: "出張届", desc: "押すとダウンロードされます(Excel)", url: "\\\\example-server\\share\\様式集\\出張届.xlsx", mode: "download", icon: "🧾", color: COLORS[1] },
-        { name: "年間行事予定表", desc: "押すとブラウザで表示されます(PDF)", url: "\\\\example-server\\share\\様式集\\年間行事予定表.pdf", icon: "📅", color: COLORS[3] },
+        { name: "出張届", desc: "押すとダウンロードされます(Excel)", url: "\\\\example-server\\share\\様式集\\出張届.xlsx", icon: "🧾", color: COLORS[1] },
       ]},
       { name: "Webサイト", items: [
         { name: "文部科学省", desc: "学習指導要領・通知など", url: "https://www.mext.go.jp/", icon: "🌐", color: COLORS[5] },
@@ -1110,7 +1109,7 @@ $("btnEndSample").onclick = endSample;
 
 const TOUR = [
   { sel: "#main .tile", title: "アイコンを押すと開きます", text: "アイコンを押すと、そのアプリ・フォルダ・Webサイトが新しいタブで開きます。名前の下に、何のためのリンクかの説明があります。" },
-  { sel: "#main .tile .copy", title: "共有フォルダの場所をコピー", text: "共有フォルダはブラウザから開けないので、アイコンを押すと場所がコピーされます。エクスプローラーのアドレス欄に貼り付けて開いてください。ファイルも「📋 場所」で場所をコピーできます。" },
+  { sel: "#main .tile .copy", title: "共有フォルダとファイル", text: "フォルダのアイコンを押すと、エクスプローラーで開きます(「開きますか?」と出たら「開く」を押します)。ファイルのアイコンを押すとダウンロードされ、画面の右上に出るファイル名を押すと開きます。「📋 場所」で場所をコピーすることもできます。" },
   { sel: "#search", title: "さがす", text: "名前や説明の一部を入れると、当てはまるリンクだけが表示されます。" },
   { sel: "#btnReload", title: "最新にする", text: "ほかの先生がリンクを直したときは、このボタンで最新の内容が表示されます。" },
   { sel: "#btnEdit", title: "リンクを足す・直す・消す", text: "担当の先生は「編集する」を押し、編集用パスワードを入れると、リンクや区分を追加・変更・削除できます。変更は自動で保存され、全員の画面に反映されます。" },

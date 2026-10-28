@@ -1,6 +1,6 @@
 # 校務ポータル 引き継ぎメモ(後任の開発者向け)
 
-最終更新: 2026-10-27
+最終更新: 2026-10-28
 
 使う先生向けの説明は [README.md](README.md)、変更の記録は [CHANGELOG.md](CHANGELOG.md)、全アプリ共通のルールは `../CLAUDE.md` にある。
 
@@ -24,18 +24,23 @@
 ## 3. データの仕組み(大事)
 
 - **なぜ `.js` なのか**: ブラウザは file:// で開いたページから `.json` を `fetch` で読めない。`<script src="links-data.js">` なら file:// でも読めるので、`window.PORTAL_DATA = {...};` の形にしている。職員は開くだけでリンクが見える(ファイルを選ぶ操作は要らない)。
-- **形**: `{ format: "school-portal-data", version: 1, title, subtitle, passwordHash, savedAt, editLock: { active, since, by, session }, sections: [ { id, name, items: [ { id, name, desc, url, mode, icon, color } ] } ] }`。読み込み時に `normalize()` で足りない項目を補う。**項目を足したら `normalize()` にも足す**。
+- **形**: `{ format: "school-portal-data", version: 1, title, subtitle, passwordHash, savedAt, editLock: { active, since, by, session }, sections: [ { id, name, items: [ { id, name, desc, url, icon, color } ] } ] }`。読み込み時に `normalize()` で足りない項目を補う。**項目を足したら `normalize()` にも足す**。
 - **保存**: 編集中だけ、File System Access API で `links-data.js` を上書きする(`toFileText()`)。読むときは最初の `{` から最後の `}` までを JSON として読む(`fromFileText()`)。Chrome / Edge のみ。
 - **前回のファイルの場所**: IndexedDB(`school-portal` の `kv`、キー `dataFile`)にファイルの場所を覚え、次の編集から選び直さなくてよいようにしている。
 - **編集ロック**: 編集を始めると `editLock` を書き、保存のたびにほかのセッションのロックがないか確かめる。15分(`EDIT_LOCK_STALE_MS`)たったロックは閉じ忘れとみなす。見ているだけの人には、開いた時点のファイルの内容で「編集中」のお知らせを出す。
 - **パスワード**: `hashPassword()` は簡単な計算(FNV-1a)。file:// では暗号の機能(crypto.subtle)が使えないことがあるため。強い守りではないことを README にも書いている。初期値は `0000`(設定欄 `DEFAULT_PASSWORD`)。
 - **リンク先の書き方**: `normUrl()` で書き方をそろえる。日本語のキーボードでは区切りが「¥」「￥」(U+00A5・U+FFE5)で入ることがあり、そのままだと場所として読めず「ファイルにアクセスできません」になっていた(2026-10-27 に直した)。全角の「Ｚ：」、エクスプローラーの「パスのコピー」の `"…"`、`/` 区切りも直す。保存するときも `normUrl()` を通す。`hrefOf()`・`fileUrlOf()` で `\\サーバー\共有\…` と `Z:\…` を `file://` の形にし、`#` や空白が入っても開けるよう区切りごとに符号化する。相対パス(`../leave-manager/index.html`)はそのまま。
-- **押したときの動き**(`openWay()`): ブラウザからエクスプローラーやアプリを直接起動することはできないので、できる範囲で開く。
-  - フォルダ(最後に拡張子がない): 押すと場所をコピー(`copyText()`)。
-  - ファイルで `mode: "download"`: `<a download>` でダウンロード。
-  - ファイルで `mode: "open"`: PDF・画像など(`VIEW_EXTS`)は新しいタブ。Excel・Word・PowerPoint(`OFFICE_SCHEMES`)は `ms-excel:ofe|u|file:///…` の形で Office に渡す。それ以外は場所をコピー。
-  - `.html` は校務アプリとみなし、いつも新しいタブ(開く・ダウンロードの選択は出さない)。
+- **押したときの動き**(`openWay()`):
+  - ファイル(最後に拡張子がある): いつもダウンロード(`<a download>`)。開くのはパソコンに保存された写し。
+    - なぜ「開く」が無いか(2026-10-28、学校のサーバーで確かめた): `ms-word:ofe|u|file:///Z:/…` の形で Word に渡すと、ブラウザが場所の日本語を必ず `%E6…` に置き換え(止められない)、Word はそれを戻さずに探して「見つかりません」になった。学校のファイルの場所はほとんど日本語なので、ユーザーと相談して、ファイルはダウンロードだけにした。2026-10-27 の版にあった「開く・ダウンロード」の選択(`mode`)は消し、`normalize()` で古いデータの `mode` も消している。
+    - サーバーの元のファイルを直してもらいたいときは、入っているフォルダをリンクにしてもらう(README に書いた)。
+  - フォルダ(最後に拡張子がない): 設定欄の `FOLDER_OPEN_WAY` のとおり。
+    - `"explorer"`(今の設定): `search-ms:displayname=…&crumb=location:…`(`explorerUrlOf()`)で、エクスプローラーの検索の窓をそのフォルダで開く。Chrome / Edge が「開きますか?」と聞く。場所は URL の形に符号化して渡す(search-ms は、エクスプローラーが日本語に戻す決まり)。ファイルはダブルクリックでサーバーの元のファイルが開く。**学校のパソコンでは未確認**。
+    - `"browser"`: `file://` のフォルダを新しいタブで開き、ブラウザに中身の一覧を出す。
+    - `"copy"`: 場所をコピーするだけ(`copyText()`)。
+  - `.html` は校務アプリとみなし、いつも新しいタブ。Webサイトも新しいタブ。
   - ファイル・フォルダには「📋 場所」ボタンも付けている。
+  - リンクの画面では、リンク先の下に、押したときにどうなるかを出している(`updateMode()`)。
 - **リンク先を選ぶ**(`pickLocation()`): ブラウザは選んだファイルの「Z:\…」を教えてくれない。そこで、共有サーバーの一番上のフォルダ(基準の場所)を一度だけ `showDirectoryPicker` で選んでもらい、IndexedDB のキー `baseFolder` に `{ path, handle }` で覚える(パソコンごと)。選んだファイルは `handle.resolve()` で基準の場所からの道筋を出し、`path` とつなぐ。
   - 基準の場所の書き方(`path`)は、`registerBaseFolder()` が、このページの場所(`location`)と、基準の場所から見た `links-data.js` の道筋を比べて自動で出す。ページが基準の場所の外にあれば `prompt` で聞く。
   - `.html` を選んだときは、このページから見た相対パス(`../leave-manager/index.html`)にする。ドライブの文字がパソコンで違っても開けるように。
@@ -64,8 +69,7 @@
 
 - [ ] **実際の共有サーバーで、file:// で開いたときの動作**(`links-data.js` の読み込み、編集と保存、前回のファイルを覚える動き)。
 - [ ] 実際の共有サーバー(Z ドライブ)で、「📄 ファイルを選ぶ」の動き(基準の場所の登録、ドライブの一番上を選んだときの `resolve()`、場所の書き方が自動で出るか)。
-- [ ] ファイルの「ダウンロードする」(`<a download>` が file:// のページから効くか。効かなければ、Excel などはブラウザの既定でダウンロードになるはず)。
-- [ ] Excel・Word を「開く」(`ms-excel:ofe|u|file:///Z:/…` で Office が開くか。開かなければ、その種類も場所のコピーに回す: `OFFICE_SCHEMES` から外す)。
-- [ ] PDF を「開く」で、ブラウザのタブに表示されるか。
+- [ ] **フォルダのアイコンで、エクスプローラーが開くか**(`search-ms:`)。開かない・学校の設定で止められている・サブフォルダのファイルまで並んで見づらいときは、設定欄の `FOLDER_OPEN_WAY` を `"browser"` にする。
+- [ ] ファイルのダウンロード(`<a download>` が file:// のページから効くか。効かなくても、Excel・Word などはブラウザの決まりでダウンロードになるはず。PDF はタブに表示されるかもしれない)。ダウンロードした Word が、止められずに開くか。
 - [ ] 各職員のデスクトップのショートカットから開いたときに、既定のブラウザが Chrome / Edge になっているか。
 - [ ] ドラッグの並べ替えを、実際の Chrome / Edge でマウスで試す。
