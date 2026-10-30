@@ -1,6 +1,6 @@
 # 校務ポータル 引き継ぎメモ(後任の開発者向け)
 
-最終更新: 2026-10-28
+最終更新: 2026-10-30
 
 使う先生向けの説明は [README.md](README.md)、変更の記録は [CHANGELOG.md](CHANGELOG.md)、全アプリ共通のルールは `../CLAUDE.md` にある。
 
@@ -24,10 +24,11 @@
 ## 3. データの仕組み(大事)
 
 - **なぜ `.js` なのか**: ブラウザは file:// で開いたページから `.json` を `fetch` で読めない。`<script src="links-data.js">` なら file:// でも読めるので、`window.PORTAL_DATA = {...};` の形にしている。職員は開くだけでリンクが見える(ファイルを選ぶ操作は要らない)。
-- **形**: `{ format: "school-portal-data", version: 1, title, subtitle, passwordHash, savedAt, editLock: { active, since, by, session }, sections: [ { id, name, items: [ { id, name, desc, url, icon, color } ] } ] }`。読み込み時に `normalize()` で足りない項目を補う。**項目を足したら `normalize()` にも足す**。
+- **形**: `{ format: "school-portal-data", version: 1, title, subtitle, passwordHash, savedAt, editLock: { active, since, by, session }, editLog: [ { by, start, end } ], sections: [ { id, name, items: [ { id, name, desc, url, icon, color } ] } ] }`。読み込み時に `normalize()` で足りない項目を補う。**項目を足したら `normalize()` にも足す**。
 - **保存**: 編集中だけ、File System Access API で `links-data.js` を上書きする(`toFileText()`)。読むときは最初の `{` から最後の `}` までを JSON として読む(`fromFileText()`)。Chrome / Edge のみ。
 - **前回のファイルの場所**: IndexedDB(`school-portal` の `kv`、キー `dataFile`)にファイルの場所を覚え、次の編集から選び直さなくてよいようにしている。
-- **編集ロック**: 編集を始めると `editLock` を書き、保存のたびにほかのセッションのロックがないか確かめる。15分(`EDIT_LOCK_STALE_MS`)たったロックは閉じ忘れとみなす。見ているだけの人には、開いた時点のファイルの内容で「編集中」のお知らせを出す。
+- **編集ロック**: 編集を始めると `editLock` を書き、保存のたびにほかのセッションのロックがないか確かめる。15分(`EDIT_LOCK_STALE_MS`)たったロックは閉じ忘れとみなす。見ているだけの人には、開いた時点のファイルの内容で「○○先生が編集中です(15:20〜)」のお知らせを出す(`sensei()` で「先生」を付ける。名前に「先生」まで入れた人は付け足さない)。名前は編集を始める画面で必ず入れてもらい(空だと始められない)、localStorage の `school-portal.editorName` に覚える。
+- **編集の記録**(`editLog`、全アプリ共通のルール、2026-10-30): 誰が・いつだけを残す(何を変えたかは残さない)。`startEditing()` で `logStart` を決め、`writeFile()` が保存のたびに**ファイルの今の記録**を読み、`start` と名前が同じ1件の `end` を今にする(無ければ先頭に足す)。閉じ忘れても最後の保存時刻が残る。新しいものから `EDIT_LOG_MAX`(200件)まで。復元(バックアップの読み込み)でも、記録はファイルの方を残す。見本では編集できないので記録は増えない。見本の架空の記録は `startSample()` で入れている。
 - **パスワード**: `hashPassword()` は簡単な計算(FNV-1a)。file:// では暗号の機能(crypto.subtle)が使えないことがあるため。強い守りではないことを README にも書いている。初期値は `0000`(設定欄 `DEFAULT_PASSWORD`)。
 - **リンク先の書き方**: `normUrl()` で書き方をそろえる。日本語のキーボードでは区切りが「¥」「￥」(U+00A5・U+FFE5)で入ることがあり、そのままだと場所として読めず「ファイルにアクセスできません」になっていた(2026-10-27 に直した)。全角の「Ｚ：」、エクスプローラーの「パスのコピー」の `"…"`、`/` 区切りも直す。保存するときも `normUrl()` を通す。`hrefOf()`・`fileUrlOf()` で `\\サーバー\共有\…` と `Z:\…` を `file://` の形にし、`#` や空白が入っても開けるよう区切りごとに符号化する。相対パス(`../leave-manager/index.html`)はそのまま。
 - **押したときの動き**(`openWay()`):
@@ -62,6 +63,7 @@
 - ドラッグの並べ替え(同じ区分の中で前へ・後ろへ、ほかの区分へ移す、自分の上に落としても変わらない)。ドラッグの操作はプログラムで再現して確かめた。
 - テストではファイルの保存先を、ブラウザ内の仮のファイル(OPFS)に差し替えた。
 - 2026-10-27: `normUrl()`・`hrefOf()`・`openWay()` を、「Z:¥…」「Ｚ：￥…」「"Z:\…"」「z:/…」、`#` や空白入りの名前、末尾の `\` などで確かめた。`pickLocation()` は、ファイルを選ぶ画面をブラウザ内の仮のフォルダ(OPFS)に差し替えて確かめた(基準の場所の書き方が自動で `Z:\` になる、`.html` が `../leave-manager/index.html` になる、基準の場所の外を選ぶとエラー)。編集の画面が外のクリックで閉じないこと。
+- 2026-10-30: 編集の記録。見本の記録の一覧、`editLog` の無い古いファイルを読む、編集の開始で1件足し保存で `end` が進む、編集を終えるとロックが外れ記録は残る、200件を超えると古いものが消える、「○○先生が編集中です(時刻〜)」の表示。保存先はブラウザ内の仮のファイル(OPFS)。開発用サーバーは http://localhost:8106/portal/ (8105 はほかのセッションが使っていたため)。
 
 ## 6. 未確認・次にやること
 

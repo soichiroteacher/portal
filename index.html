@@ -188,6 +188,8 @@
   .field textarea { min-height: 64px; resize: vertical; }
   .dialog .actions { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; }
   .error { color: var(--danger); font-size: .9rem; }
+  .log-table { width: 100%; border-collapse: collapse; font-size: .92rem; }
+  .log-table th, .log-table td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); }
   .icon-pick { display: grid; grid-template-columns: repeat(auto-fill, minmax(42px, 1fr)); gap: 6px; }
   .icon-pick button {
     height: 42px; border: 1px solid var(--line); border-radius: 10px; background: var(--ground);
@@ -242,6 +244,7 @@
     <input type="search" id="search" class="search" placeholder="🔍 さがす(名前・説明)" aria-label="リンクをさがす">
     <button type="button" class="btn" id="btnTour">❓ はじめての方へ</button>
     <button type="button" class="btn" id="btnReload" title="ほかの先生が直した内容を表示します">↻ 最新にする</button>
+    <button type="button" class="btn" id="btnLog" title="誰が・いつ編集したかを表示します">🕘 編集の記録</button>
     <button type="button" class="btn primary" id="btnEdit">✏ 編集する</button>
   </div>
   <div class="editbar" id="editBar" hidden>
@@ -330,6 +333,12 @@ let sampleMode = false;
 let saveTimer = null;
 let saveChain = Promise.resolve();
 let lastSavedAt = null;
+let editorName = "";      // 編集を始めるときに入れてもらった名前
+let logStart = null;      // この編集を始めた時刻(編集の記録の1件を見分ける)
+const EDIT_LOG_MAX = 200; // 編集の記録は新しいものからこの件数まで残す
+// 「○○先生」の形にする(名前に「先生」まで入れた人でも「先生先生」にならないように)
+function sensei(name) { name = (name || "").trim(); return !name ? "ほかの先生" : /先生$/.test(name) ? name : name + "先生"; }
+function hm(iso) { const d = new Date(iso), p = n => String(n).padStart(2, "0"); return `${p(d.getHours())}:${p(d.getMinutes())}`; }
 
 function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 7); }
 function $(id) { return document.getElementById(id); }
@@ -366,6 +375,8 @@ function normalize(d) {
   d.subtitle = d.subtitle || "";
   d.passwordHash = d.passwordHash || hashPassword(DEFAULT_PASSWORD);
   d.editLock = d.editLock || { active: false };
+  // 編集の記録(誰が・いつ)。2026-10-30 に足した項目なので、無い古いファイルは空の記録として読む
+  d.editLog = Array.isArray(d.editLog) ? d.editLog.filter(e => e && e.start) : [];
   d.sections = Array.isArray(d.sections) ? d.sections : [];
   for (const s of d.sections) {
     s.id = s.id || uid(); s.name = s.name || "区分";
@@ -428,7 +439,14 @@ function writeFile({ releaseLock = false } = {}) {
     }
     const now = new Date().toISOString();
     snapshot.savedAt = now;
-    snapshot.editLock = releaseLock ? { active: false } : { active: true, since: now, by: storeGet(NAME_KEY) || "", session: SESSION_ID };
+    snapshot.editLock = releaseLock ? { active: false } : { active: true, since: now, by: editorName, session: SESSION_ID };
+    // 編集の記録: ファイルの今の記録に、この編集の1件を足す(または end を今にする)。閉じ忘れても最後の保存時刻が残る
+    const log = normalize({ editLog: current.editLog }).editLog;
+    let mine = log.find(e => e.start === logStart && e.by === editorName);
+    if (!mine) { mine = { by: editorName, start: logStart || now, end: now }; log.unshift(mine); }
+    mine.end = now;
+    snapshot.editLog = log.slice(0, EDIT_LOG_MAX);
+    data.editLog = snapshot.editLog;
     const w = await fileHandle.createWritable();
     await w.write(toFileText(snapshot));
     await w.close();
@@ -529,7 +547,8 @@ function render() {
   // 見ているだけの人に、ほかの先生が編集中であることを知らせる(開いた時点のファイルの内容で判断)
   const lock = data && !editMode && !sampleMode && isForeignLock(data.editLock) ? data.editLock : null;
   $("lockNotice").hidden = !lock;
-  if (lock) $("lockNotice").textContent = `${lock.by || "ほかの先生"}がリンクを編集中です(${formatTime(lock.since)}から)。終わったら「↻ 最新にする」を押すと、新しい内容が表示されます。`;
+  $("btnLog").hidden = !data || editMode;
+  if (lock) $("lockNotice").textContent = `${sensei(lock.by)}が編集中です(${hm(lock.since)}〜)。終わったら「↻ 最新にする」を押すと、新しい内容が表示されます。`;
   if (!data) return;
 
   $("pageTitle").textContent = data.title;
@@ -908,7 +927,8 @@ $("btnEdit").onclick = () => {
       actions(button("キャンセル", "", closeDialog), button("編集を始める", "primary", async () => {
         if (hashPassword(pw.value) !== data.passwordHash) { err.textContent = "パスワードが違います。もう一度入れてください。"; err.hidden = false; pw.select(); return; }
         if (!nm.value.trim()) { err.textContent = "名前を入れてください。"; err.hidden = false; nm.focus(); return; }
-        storeSet(NAME_KEY, nm.value.trim());
+        editorName = nm.value.trim();
+        storeSet(NAME_KEY, editorName);
         closeDialog();
         await startEditing();
       })),
@@ -934,10 +954,11 @@ async function startEditing() {
     fileHandle = await getHandle();
     const current = normalize(await readHandle(fileHandle));
     if (isForeignLock(current.editLock)) {
-      if (!confirm(`⚠ ${current.editLock.by || "ほかの先生"}が編集中です(${formatTime(current.editLock.since)}から)。\nこのまま編集すると、その先生の変更が消えるおそれがあります。それでも編集しますか？`)) return;
+      if (!confirm(`⚠ ${sensei(current.editLock.by)}が編集中です(${hm(current.editLock.since)}〜)。\nこのまま編集すると、その先生の変更が消えるおそれがあります。それでも編集しますか？`)) return;
     }
     data = current;     // 最新のファイルの内容から編集を始める
     editMode = true;
+    logStart = new Date().toISOString(); // 編集の記録の1件目を、最初の保存で足す
     render();
     await writeFile();  // 編集中の印を書く
     toast("編集を始めました");
@@ -955,6 +976,25 @@ $("btnEndEdit").onclick = async () => {
   editMode = false; render(); toast("保存して、編集を終えました");
 };
 window.addEventListener("beforeunload", e => { if (editMode) { e.preventDefault(); e.returnValue = ""; } });
+
+// 編集の記録(誰が・いつ編集したか。何を変えたかは残さない)
+$("btnLog").onclick = () => openDialog(d => {
+  d.append(el("h3", {}, "編集の記録"));
+  const log = data.editLog || [];
+  if (!log.length) d.append(el("p", { class: "hint" }, "まだ記録がありません。"));
+  else {
+    const wd = "日月火水木金土";
+    const t = el("table", { class: "log-table" });
+    const head = el("tr"); ["名前", "日付", "時刻"].forEach(h => head.append(el("th", {}, h))); t.append(head);
+    for (const e of log) {
+      const s = new Date(e.start), tr = el("tr");
+      tr.append(el("td", {}, sensei(e.by)), el("td", {}, `${s.getMonth() + 1}/${s.getDate()}(${wd[s.getDay()]})`), el("td", {}, `${hm(e.start)}〜${e.end ? hm(e.end) : ""}`));
+      t.append(tr);
+    }
+    d.append(el("p", { class: "hint" }, `新しい順に、最大${EDIT_LOG_MAX}件まで残ります。時刻は「始めた時刻〜最後に保存した時刻」です。`), t);
+  }
+  d.append(actions(button("閉じる", "primary", closeDialog)));
+});
 
 $("btnReload").onclick = () => location.reload();
 $("search").addEventListener("input", render);
@@ -1079,6 +1119,13 @@ function sampleData() {
 function startSample() {
   beforeSample = data;
   data = sampleData(); sampleMode = true; editMode = false;
+  // 見本の編集の記録(架空の名前)。見本では編集しないので、記録は増えない
+  const ago = (days, h, m) => { const x = new Date(); x.setDate(x.getDate() - days); x.setHours(h, m, 0, 0); return x.toISOString(); };
+  data.editLog = [
+    { by: "見本 花子", start: ago(1, 15, 20), end: ago(1, 15, 42) },
+    { by: "見本 太郎", start: ago(4, 8, 5), end: ago(4, 8, 11) },
+    { by: "見本 花子", start: ago(9, 16, 30), end: ago(9, 17, 2) },
+  ];
   render();
 }
 function endSample() {
@@ -1093,7 +1140,8 @@ const TOUR = [
   { sel: "#main .tile .copy", title: "ファイルはダウンロード", text: "様式などのファイルのアイコンを押すと、ダウンロードされます。画面の右上に出るファイル名を押すと開きます(パソコンに保存された写しです)。「📋 場所」を押すと、サーバーのどこにあるかをコピーできます。" },
   { sel: "#search", title: "さがす", text: "名前や説明の一部を入れると、当てはまるリンクだけが表示されます。" },
   { sel: "#btnReload", title: "最新にする", text: "ほかの先生がリンクを直したときは、このボタンで最新の内容が表示されます。" },
-  { sel: "#btnEdit", title: "リンクを足す・直す・消す", text: "担当の先生は「編集する」を押し、編集用パスワードを入れると、リンクや区分を追加・変更・削除できます。変更は自動で保存され、全員の画面に反映されます。" },
+  { sel: "#btnLog", title: "編集の記録", text: "誰が・いつリンクを編集したかを、新しい順に見られます(何を変えたかは残りません)。" },
+  { sel: "#btnEdit", title: "リンクを足す・直す・消す", text: "担当の先生は「編集する」を押し、編集用パスワードとあなたの名前を入れると、リンクや区分を追加・変更・削除できます。変更は自動で保存され、全員の画面に反映されます。" },
 ];
 let tourIndex = 0, tourSampled = false;
 function startTour() {

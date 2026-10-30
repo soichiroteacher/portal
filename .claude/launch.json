@@ -4,9 +4,9 @@
     {
       "name": "portal",
       "runtimeExecutable": "powershell.exe",
-      "runtimeArgs": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "../../.claude/serve-dir.ps1", "-Root", "apps", "-Port", "8105"],
-      "port": 8105,
-      "url": "http://localhost:8105"
+      "runtimeArgs": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "../../.claude/serve-dir.ps1", "-Root", "apps", "-Port", "8106"],
+      "port": 8106,
+      "url": "http://localhost:8106"
     }
   ]
 }
