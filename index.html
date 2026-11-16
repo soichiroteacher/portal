@@ -191,6 +191,9 @@
   .error { color: var(--danger); font-size: .9rem; }
   .log-table { width: 100%; border-collapse: collapse; font-size: .92rem; }
   .log-table th, .log-table td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); }
+  /* 記録が長くても「名前・日付・時刻」が見えるように、見出しをダイアログの上に固定する。
+     ダイアログ(.dialog)がスクロールする枠。上の余白(padding 22px)の分だけ上にずらして、枠の一番上に付ける */
+  .log-table th { position: sticky; top: -22px; background: var(--surface); z-index: 1; }
   .icon-pick { display: grid; grid-template-columns: repeat(auto-fill, minmax(42px, 1fr)); gap: 6px; }
   .icon-pick button {
     height: 42px; border: 1px solid var(--line); border-radius: 10px; background: var(--ground);
