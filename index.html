@@ -13,7 +13,8 @@
  ・校務共有サーバーに置き、各職員のデスクトップにショートカットを置いて使う。
  ・リンクのデータは、同じフォルダの links-data.js に入っている。
    (ブラウザは file:// で開いたページから .json を読めないので、<script> で読める .js にしている)
- ・編集は「✏ 編集する」→ 編集用パスワード → データファイル(links-data.js)を選ぶ。
+ ・編集は「✏ 編集する」→ 名前を入れる → データファイル(links-data.js)を選ぶ。
+   パスワードは付けない(全アプリ共通のルール。誰が編集したかは名前と「編集の記録」で分かる)。
    File System Access API を使うので Chrome / Edge のみ。
  ・外部ライブラリ・インターネット接続は使わない。
 
@@ -290,8 +291,6 @@
 /* ============================================================
    1. 設定欄(学校ごとに変えるもの)
    ============================================================ */
-// 編集用パスワードの初期値。データファイルを作ったら「設定」で必ず変えてもらう。
-const DEFAULT_PASSWORD = "0000";
 // 編集中の印が、この時間より古ければ「閉じ忘れ」とみなして無視する(ミリ秒)。
 const EDIT_LOCK_STALE_MS = 15 * 60 * 1000;
 // アイコンの候補(絵文字)。足したいときはここに書き足す。
@@ -358,14 +357,6 @@ function toast(msg) {
 function storeGet(key) { try { return localStorage.getItem(key); } catch (e) { return null; } }
 function storeSet(key, v) { try { localStorage.setItem(key, v); } catch (e) { /* 使えなくても動く */ } }
 
-// 編集用パスワードの照合用。うっかり変更を防ぐためのもので、強い守りではない
-// (file:// では暗号の機能が使えないことがあるので、簡単な計算にしている)。
-function hashPassword(s) {
-  let h = 2166136261;
-  for (const ch of "school-portal:" + s) { h ^= ch.codePointAt(0); h = Math.imul(h, 16777619) >>> 0; }
-  return h.toString(16);
-}
-
 // 足りない項目を補う(古いデータファイルや手で直したファイルでも動くように)。
 function normalize(d) {
   d = d && typeof d === "object" ? d : {};
@@ -373,7 +364,8 @@ function normalize(d) {
   d.version = 1;
   d.title = d.title || "校務ポータル";
   d.subtitle = d.subtitle || "";
-  d.passwordHash = d.passwordHash || hashPassword(DEFAULT_PASSWORD);
+  // 2026-11 までの版にあった編集用パスワード。今は付けない(共通ルール)ので、読み込むときに消す(次の保存でファイルからも消える)
+  delete d.passwordHash;
   d.editLock = d.editLock || { active: false };
   // 編集の記録(誰が・いつ)。2026-10-30 に足した項目なので、無い古いファイルは空の記録として読む
   d.editLog = Array.isArray(d.editLog) ? d.editLog.filter(e => e && e.start) : [];
@@ -917,15 +909,12 @@ $("btnEdit").onclick = () => {
   if (!supportsFileAccess) { alert("このブラウザでは編集できません。Google Chrome か Microsoft Edge で開いてください。"); return; }
   openDialog(d => {
     d.append(el("h3", {}, "編集する"));
-    const pw = el("input", { type: "password", autocomplete: "off" });
     const nm = el("input", { type: "text", maxlength: "20" }); nm.value = storeGet(NAME_KEY) || "";
     const err = el("p", { class: "error" }); err.hidden = true;
     d.append(
-      field("編集用パスワード", pw, "分からないときは、担当の先生に聞いてください。"),
-      field("あなたの名前", nm, "編集中は、ほかの先生の画面に「○○先生が編集中」と出ます。"),
+      field("あなたの名前", nm, "編集中は、ほかの先生の画面に「○○先生が編集中」と出ます。「🕘 編集の記録」にも残ります。"),
       err,
       actions(button("キャンセル", "", closeDialog), button("編集を始める", "primary", async () => {
-        if (hashPassword(pw.value) !== data.passwordHash) { err.textContent = "パスワードが違います。もう一度入れてください。"; err.hidden = false; pw.select(); return; }
         if (!nm.value.trim()) { err.textContent = "名前を入れてください。"; err.hidden = false; nm.focus(); return; }
         editorName = nm.value.trim();
         storeSet(NAME_KEY, editorName);
@@ -1006,23 +995,12 @@ $("btnSettings").onclick = () => openDialog(d => {
   d.append(el("h3", {}, "設定・バックアップ"));
   const title = el("input", { type: "text", maxlength: "30" }); title.value = data.title;
   const sub = el("input", { type: "text", maxlength: "60" }); sub.value = data.subtitle;
-  const pw1 = el("input", { type: "password", autocomplete: "new-password" });
-  const pw2 = el("input", { type: "password", autocomplete: "new-password" });
-  const err = el("p", { class: "error" }); err.hidden = true;
   const baseInfo = el("p", { class: "hint" }, "まだ登録していません。リンクを追加するときに「📄 ファイルを選ぶ」を押すと、登録の案内が出ます。");
   idbGet("baseFolder").then(b => { if (b) baseInfo.textContent = `このパソコンでは「${b.path}」の中から選びます。`; });
   d.append(
     field("ページの名前", title),
     field("説明(名前の下に小さく出ます)", sub, "例：〇〇中学校 職員用"),
-    field("新しい編集用パスワード(変えるときだけ)", pw1, "最初は「0000」です。必ず変えてください。"),
-    field("新しい編集用パスワード(確認)", pw2),
-    err,
     actions(button("閉じる", "", closeDialog), button("保存する", "primary", () => {
-      if (pw1.value || pw2.value) {
-        if (pw1.value.length < 4) { err.textContent = "パスワードは4文字以上にしてください。"; err.hidden = false; return; }
-        if (pw1.value !== pw2.value) { err.textContent = "確認のパスワードが一致しません。"; err.hidden = false; return; }
-        data.passwordHash = hashPassword(pw1.value);
-      }
       data.title = title.value.trim() || "校務ポータル";
       data.subtitle = sub.value.trim();
       closeDialog(); changed(); toast("保存しました");
@@ -1065,9 +1043,7 @@ function importBackup() {
     }
     const n = (d.sections || []).reduce((a, s) => a + (s.items || []).length, 0);
     if (!confirm(`バックアップ「${f.name}」(区分${(d.sections || []).length}つ・リンク${n}件)の内容で、今のリンクをすべて置き換えます。元に戻せません。よろしいですか？`)) return;
-    const keepPw = data.passwordHash;
     data = normalize(d);
-    data.passwordHash = d.passwordHash || keepPw;
     closeDialog(); changed(); toast("バックアップから復元しました");
   };
   inp.click();
@@ -1082,7 +1058,7 @@ $("btnCreate").onclick = async () => {
     d.savedAt = new Date().toISOString();
     const w = await h.createWritable(); await w.write(toFileText(d)); await w.close();
     await idbSet("dataFile", h);
-    alert("データファイルを作りました。ページを開き直します。\n\n編集用パスワードは最初「0000」です。「✏ 編集する」→「⚙ 設定・バックアップ」で、必ず変えてください。");
+    alert("データファイルを作りました。ページを開き直します。\n\n「✏ 編集する」を押し、名前を入れると、リンクを直せます。");
     location.reload();
   } catch (err) {
     if (err.name !== "AbortError") alert("データファイルを作れませんでした。\n" + err.message);
@@ -1141,7 +1117,7 @@ const TOUR = [
   { sel: "#search", title: "さがす", text: "名前や説明の一部を入れると、当てはまるリンクだけが表示されます。" },
   { sel: "#btnReload", title: "最新にする", text: "ほかの先生がリンクを直したときは、このボタンで最新の内容が表示されます。" },
   { sel: "#btnLog", title: "編集の記録", text: "誰が・いつリンクを編集したかを、新しい順に見られます(何を変えたかは残りません)。" },
-  { sel: "#btnEdit", title: "リンクを足す・直す・消す", text: "担当の先生は「編集する」を押し、編集用パスワードとあなたの名前を入れると、リンクや区分を追加・変更・削除できます。変更は自動で保存され、全員の画面に反映されます。" },
+  { sel: "#btnEdit", title: "リンクを足す・直す・消す", text: "担当の先生は「編集する」を押し、あなたの名前を入れると(パスワードは要りません)、リンクや区分を追加・変更・削除できます。変更は自動で保存され、全員の画面に反映されます。" },
 ];
 let tourIndex = 0, tourSampled = false;
 function startTour() {
