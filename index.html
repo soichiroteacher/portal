@@ -1088,9 +1088,13 @@ $("btnSettings").onclick = () => openDialog(d => {
   );
 });
 
+// 手動の書き出しも、自動バックアップと同じ形・同じ名前の .js(links-data.js と同じ形)にする(共通ルール、2026-11-21)。
+// 名前を links-data.js に変えて置き直せば、アプリを使わなくても戻せるように。編集中の印は外しておく。
 function exportBackup() {
-  const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
-  const a = el("a", { href: URL.createObjectURL(blob), download: `校務ポータル_バックアップ_${todayStr()}.json` });
+  const snapshot = JSON.parse(JSON.stringify(data));
+  snapshot.editLock = { active: false };
+  const blob = new Blob([toFileText(snapshot)], { type: "text/javascript" });
+  const a = el("a", { href: URL.createObjectURL(blob), download: `${BACKUP_PREFIX}${stampNow()}.js` });
   document.body.append(a); a.click(); a.remove();
   setTimeout(() => URL.revokeObjectURL(a.href), 1000);
 }
