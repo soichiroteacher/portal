@@ -266,6 +266,11 @@
   <button type="button" class="btn small" id="btnEndSample">見本を終える</button>
 </div>
 <div class="notice" id="lockNotice" hidden></div>
+<div class="notice sample" id="viewNotice" hidden>
+  <span id="viewNoticeText"></span>
+  <button type="button" class="btn small primary" id="btnRestoreView">この内容に戻す</button>
+  <button type="button" class="btn small" id="btnEndView">見るのをやめる</button>
+</div>
 
 <section class="welcome" id="welcome" hidden>
   <h2>校務ポータルへようこそ</h2>
@@ -329,8 +334,12 @@ const supportsFileAccess = "showOpenFilePicker" in window && "showSaveFilePicker
 const SESSION_ID = Math.random().toString(36).slice(2, 10);
 
 let data = null;          // 表示しているデータ
-let fileHandle = null;    // 編集中のデータファイル
+let fileHandle = null;    // 編集中のデータファイル(links-data.js)
+let dataFolder = null;    // links-data.js の入っているフォルダ(自動バックアップをこの中の「バックアップ」に取る)
+let viewing = null;       // バックアップなどを見るだけで開いているとき { name, keep: 元のデータ }
 let editMode = false;
+// 編集できる状態か(編集中でも、バックアップを見るだけで開いている間は直せない)
+function editing() { return editMode && !viewing; }
 let sampleMode = false;
 let saveTimer = null;
 let saveChain = Promise.resolve();
@@ -353,9 +362,9 @@ function formatTime(iso) {
   const d = new Date(iso), p = n => String(n).padStart(2, "0");
   return `${d.getMonth() + 1}/${d.getDate()} ${p(d.getHours())}:${p(d.getMinutes())}`;
 }
-function toast(msg) {
+function toast(msg, ms = 2600) {
   const t = $("toast"); t.textContent = msg; t.hidden = false;
-  clearTimeout(toast.timer); toast.timer = setTimeout(() => { t.hidden = true; }, 2600);
+  clearTimeout(toast.timer); toast.timer = setTimeout(() => { t.hidden = true; }, ms);
 }
 function storeGet(key) { try { return localStorage.getItem(key); } catch (e) { return null; } }
 function storeSet(key, v) { try { localStorage.setItem(key, v); } catch (e) { /* 使えなくても動く */ } }
@@ -454,7 +463,7 @@ function writeFile({ releaseLock = false } = {}) {
   return p;
 }
 function scheduleSave() {
-  if (sampleMode || !editMode) return;
+  if (sampleMode || !editing()) return;
   $("editStatus").textContent = "編集中です。保存しています…";
   clearTimeout(saveTimer);
   saveTimer = setTimeout(() => {
@@ -537,8 +546,10 @@ function render() {
   $("welcome").hidden = !!data;
   $("btnEdit").hidden = !data || editMode || sampleMode;
   $("btnReload").hidden = !data || editMode || sampleMode;
-  $("editBar").hidden = !editMode;
+  $("editBar").hidden = !editing();
   $("sampleNotice").hidden = !sampleMode;
+  $("viewNotice").hidden = !viewing;
+  if (viewing) $("viewNoticeText").textContent = `「${viewing.name}」を見るだけで開いています(直せません)。この内容に戻すときは「この内容に戻す」を押してください。`;
   // 見ているだけの人に、ほかの先生が編集中であることを知らせる(開いた時点のファイルの内容で判断)
   const lock = data && !editMode && !sampleMode && isForeignLock(data.editLock) ? data.editLock : null;
   $("lockNotice").hidden = !lock;
@@ -558,7 +569,7 @@ function render() {
     const box = el("section", { "data-section": sec.id });
     const head = el("div", { class: "section-head" });
     head.append(el("h2", {}, sec.name), el("span", { class: "count" }, `${items.length}件`));
-    if (editMode) {
+    if (editing()) {
       const tools = el("div", { class: "section-tools" });
       tools.append(
         smallBtn("▲", "区分を上へ", () => moveSection(si, -1), si === 0),
@@ -570,7 +581,7 @@ function render() {
     }
     const grid = el("div", { class: "grid" });
     items.forEach(it => grid.append(tile(it, sec)));
-    if (editMode) {
+    if (editing()) {
       const add = el("button", { class: "tile add", type: "button" }, "＋ リンクを追加");
       add.onclick = () => editItem(sec, null);
       grid.append(add);
@@ -592,7 +603,7 @@ function render() {
     main.append(box);
   });
   if (q && !main.children.length) main.append(el("p", { class: "empty" }, `「${$("search").value}」に当てはまるリンクはありません。`));
-  if (editMode) {
+  if (editing()) {
     const b = el("button", { class: "btn add-section", type: "button" }, "＋ 区分を追加");
     b.onclick = addSection;
     main.append(b);
@@ -614,7 +625,7 @@ function iconEl(it) {
 function tile(it, sec) {
   const kind = kindOf(it);
   let t;
-  if (editMode) {
+  if (editing()) {
     t = el("div", { class: "tile editing" });
   } else {
     const way = openWay(it);
@@ -632,12 +643,12 @@ function tile(it, sec) {
   if (it.desc) t.append(el("div", { class: "desc" }, it.desc));
   if (kind) t.append(el("span", { class: "kind" }, kind));
   // 共有サーバーのファイルには、サーバーのどこにあるかをコピーするボタンを付ける(エクスプローラーで探すとき用)。
-  if (!editMode && isPath(it.url)) {
+  if (!editing() && isPath(it.url)) {
     const c = el("button", { class: "copy", type: "button", title: "場所をコピーして、エクスプローラーのアドレス欄に貼り付けられます" }, "📋 場所");
     c.onclick = e => { e.preventDefault(); e.stopPropagation(); copyText(normUrl(it.url)); };
     t.append(c);
   }
-  if (editMode) {
+  if (editing()) {
     const idx = sec.items.indexOf(it);
     const tools = el("div", { class: "tile-tools" });
     const mk = (label, title, fn, disabled) => { const b = el("button", { type: "button", title }, label); b.onclick = fn; b.disabled = !!disabled; return b; };
@@ -928,26 +939,72 @@ $("btnEdit").onclick = () => {
   });
 };
 
-async function getHandle() {
-  // 前回選んだファイルがあれば、それを使う(ボタンを押した直後なので、許可の確認を出せる)
-  const last = await idbGet("dataFile");
+// 編集するときは、links-data.js の入っている「データのフォルダ」(portal)を選んでもらう。
+// ファイル1つだけを選ぶと、そばに「バックアップ」フォルダを作れないため(2026-11-21 の共通ルールで自動バックアップを入れたときに変えた)。
+// IndexedDB のキー dataFolder に覚える。リンク先を選ぶときの「基準の場所」(キー baseFolder)とは別のもの。
+// 以前の版で覚えていたキー dataFile(ファイル1つ)はもう使わない(そのパソコンで一度だけフォルダを選び直してもらう)。
+const DATA_FILE_NAME = "links-data.js";
+async function getDataFolder() {
+  // 前回選んだフォルダがあれば、それを使う(ボタンを押した直後なので、許可の確認を出せる)
+  const last = await idbGet("dataFolder");
   if (last) {
-    try { if (await last.requestPermission({ mode: "readwrite" }) === "granted") return last; } catch (e) { /* 選び直してもらう */ }
+    try {
+      if (await last.requestPermission({ mode: "readwrite" }) === "granted") { await last.getFileHandle(DATA_FILE_NAME); return last; }
+    } catch (e) { /* 選び直してもらう */ }
   }
-  alert("このパソコンで初めて編集するときだけ、データファイルを選びます。\n次の画面で、このページと同じフォルダにある「links-data.js」を選んでください。");
-  const [h] = await window.showOpenFilePicker({ types: [{ description: "校務ポータルのデータ", accept: { "text/javascript": [".js"] } }] });
-  if (await h.requestPermission({ mode: "readwrite" }) !== "granted") throw new Error("ファイルへの書き込みが許可されませんでした。");
-  await idbSet("dataFile", h);
-  return h;
+  alert("このパソコンで初めて編集するときだけ、データのフォルダを選びます。\n次の画面で、このページ(index.html)と「links-data.js」が入っているフォルダ(portal)を選び、「編集を許可」を押してください。\n(このフォルダの中の「バックアップ」フォルダに、自動でバックアップを取るためです)");
+  const base = await idbGet("baseFolder");
+  const opts = { id: "portal-data", mode: "readwrite" };
+  if (base && base.handle) opts.startIn = base.handle; // 基準の場所を登録してあれば、そこから探し始める
+  const dir = await window.showDirectoryPicker(opts);
+  try { await dir.getFileHandle(DATA_FILE_NAME); }
+  catch (e) { throw new Error(`選んだフォルダ「${dir.name}」に links-data.js がありません。`); }
+  await idbSet("dataFolder", dir);
+  return dir;
+}
+
+/* ---- 自動バックアップ(共通ルール「データファイルの置き方と自動バックアップ」) ----
+   ・置き場所: データのフォルダの中の「バックアップ」フォルダ(なければ作る)
+   ・名前: 校務ポータル_バックアップ_YYYY-MM-DD_HHMM.js(中身は links-data.js そのままの写し)
+   ・取るとき: 編集を始めるとき、その日のバックアップがまだなければ1つ(何人が編集しても1日1つ)。復元する前は毎回。
+   ・アプリでは消さない(整理は手で。README に書いた) */
+const BACKUP_DIR = "バックアップ";
+const BACKUP_PREFIX = "校務ポータル_バックアップ_";
+function stampNow() {
+  const d = new Date(), p = n => String(n).padStart(2, "0");
+  return `${todayStr()}_${p(d.getHours())}${p(d.getMinutes())}`;
+}
+async function listBackups() {
+  let dir;
+  try { dir = await dataFolder.getDirectoryHandle(BACKUP_DIR); }
+  catch (e) { if (e.name === "NotFoundError") return []; throw e; }
+  const names = [];
+  for await (const [name, h] of dir.entries()) if (h.kind === "file" && name.startsWith(BACKUP_PREFIX)) names.push(name);
+  return names.sort();
+}
+async function takeBackup({ oncePerDay = false } = {}) {
+  if (oncePerDay && (await listBackups()).some(n => n.startsWith(BACKUP_PREFIX + todayStr() + "_"))) return null;
+  const text = await (await fileHandle.getFile()).text();
+  const dir = await dataFolder.getDirectoryHandle(BACKUP_DIR, { create: true });
+  // 同じ分に2つ取るとき(復元を続けたときなど)は、上書きしないよう _2, _3 … を付ける
+  let name = BACKUP_PREFIX + stampNow() + ".js";
+  for (let i = 2; await dir.getFileHandle(name).then(() => true, () => false); i++) name = `${BACKUP_PREFIX}${stampNow()}_${i}.js`;
+  const w = await (await dir.getFileHandle(name, { create: true })).createWritable();
+  await w.write(text); await w.close();
+  return name;
 }
 
 async function startEditing() {
   try {
-    fileHandle = await getHandle();
+    dataFolder = await getDataFolder();
+    fileHandle = await dataFolder.getFileHandle(DATA_FILE_NAME);
     const current = normalize(await readHandle(fileHandle));
     if (isForeignLock(current.editLock)) {
       if (!confirm(`⚠ ${sensei(current.editLock.by)}が編集中です(${hm(current.editLock.since)}〜)。\nこのまま編集すると、その先生の変更が消えるおそれがあります。それでも編集しますか？`)) return;
     }
+    // 編集を始める前の状態を、その日まだなければバックアップに取る。取れないときは編集を始めない(元に戻せなくなるため)
+    try { await takeBackup({ oncePerDay: true }); }
+    catch (e) { throw new Error("自動バックアップを取れませんでした(" + e.message + ")。"); }
     data = current;     // 最新のファイルの内容から編集を始める
     editMode = true;
     logStart = new Date().toISOString(); // 編集の記録の1件目を、最初の保存で足す
@@ -957,7 +1014,7 @@ async function startEditing() {
   } catch (err) {
     if (err.name === "AbortError") return;
     editMode = false; render();
-    alert("編集を始められませんでした。\n" + err.message + "\n\n選んだのがこのページと同じフォルダの links-data.js か、共有サーバーにつながっているかを確かめてください。");
+    alert("編集を始められませんでした。\n" + err.message + "\n\n選んだのが links-data.js の入っているフォルダ(portal)か、共有サーバーにつながっているか、フォルダに書き込めるかを確かめてください。");
   }
 }
 
@@ -1000,6 +1057,11 @@ $("btnSettings").onclick = () => openDialog(d => {
   const sub = el("input", { type: "text", maxlength: "60" }); sub.value = data.subtitle;
   const baseInfo = el("p", { class: "hint" }, "まだ登録していません。リンクを追加するときに「📄 ファイルを選ぶ」を押すと、登録の案内が出ます。");
   idbGet("baseFolder").then(b => { if (b) baseInfo.textContent = `このパソコンでは「${b.path}」の中から選びます。`; });
+  // 自動バックアップの件数(アプリでは消さないので、増えたら手で整理してもらう)
+  const backupInfo = el("p", { class: "hint" }, "自動バックアップ: 数えています…");
+  listBackups().then(
+    names => { backupInfo.textContent = `自動バックアップ: ${names.length}件(「${dataFolder.name}」フォルダの中の「${BACKUP_DIR}」フォルダ。編集を始めた日に1つずつ増えます。アプリでは消さないので、多くなったら古いものをエクスプローラーで消してください)`; },
+    e => { backupInfo.textContent = "自動バックアップの件数を数えられませんでした(" + e.message + ")"; });
   d.append(
     field("ページの名前", title),
     field("説明(名前の下に小さく出ます)", sub, "例：〇〇中学校 職員用"),
@@ -1017,7 +1079,8 @@ $("btnSettings").onclick = () => openDialog(d => {
     })),
     el("hr"),
     el("h3", {}, "バックアップと復元"),
-    el("p", { class: "hint" }, "「データを書き出す」で今のリンクをファイルに控えます。元に戻すときは「データを読み込む」で控えたファイルを選びます(今のリンクは置き換わります)。"),
+    backupInfo,
+    el("p", { class: "hint" }, "「データを書き出す」で今のリンクをファイルに控えます。元に戻すときは「データを読み込む」で、控えたファイルか「バックアップ」フォルダのファイルを選びます。選んだファイルは見るだけで開き、「この内容に戻す」を押すと今のリンクと置き換わります。"),
     actions(
       button("データを書き出す(バックアップ)", "", exportBackup),
       button("データを読み込む(復元)", "", importBackup),
@@ -1044,13 +1107,29 @@ function importBackup() {
       alert("このファイルは読み込めません。\n" + e.message + "\n\n「データを書き出す(バックアップ)」で作ったファイルを選んでください。");
       return;
     }
-    const n = (d.sections || []).reduce((a, s) => a + (s.items || []).length, 0);
-    if (!confirm(`バックアップ「${f.name}」(区分${(d.sections || []).length}つ・リンク${n}件)の内容で、今のリンクをすべて置き換えます。元に戻せません。よろしいですか？`)) return;
+    // すぐには置き換えず、見るだけで開く(共通ルール。中身を確かめてから「この内容に戻す」で戻す)
+    clearTimeout(saveTimer);
+    await saveChain;
+    viewing = { name: f.name, keep: data };
     data = normalize(d);
-    closeDialog(); changed(); toast("バックアップから復元しました");
+    closeDialog(); render(); window.scrollTo(0, 0);
   };
   inp.click();
 }
+// 「この内容に戻す」: 先に今の本体をバックアップに取り、確認のうえで本体へ書き込む
+$("btnRestoreView").onclick = async () => {
+  const n = data.sections.reduce((a, s) => a + s.items.length, 0);
+  if (!confirm(`「${viewing.name}」(区分${data.sections.length}つ・リンク${n}件)の内容で、今のリンクをすべて置き換えます。\n今のリンクは、先に「${BACKUP_DIR}」フォルダにバックアップを取ります。よろしいですか？`)) return;
+  let saved;
+  try { saved = await takeBackup(); }
+  catch (e) { alert("今のリンクのバックアップを取れなかったので、戻すのをやめました。\n" + e.message + "\n\n共有サーバーにつながっているか確かめてから、もう一度押してください。"); return; }
+  viewing = null;
+  render();
+  try { await writeFile(); }
+  catch (e) { alert("戻した内容を保存できませんでした。\n" + e.message + "\n\n今のリンクは「" + saved + "」に残っています。"); return; }
+  toast("この内容に戻しました(前の内容はバックアップに取りました)", 4000);
+};
+$("btnEndView").onclick = () => { data = viewing.keep; viewing = null; render(); };
 
 $("btnCreate").onclick = async () => {
   if (!supportsFileAccess) { alert("このブラウザではデータファイルを作れません。Google Chrome か Microsoft Edge で開いてください。"); return; }
@@ -1060,7 +1139,6 @@ $("btnCreate").onclick = async () => {
     const d = normalize({ sections: initialSections() });
     d.savedAt = new Date().toISOString();
     const w = await h.createWritable(); await w.write(toFileText(d)); await w.close();
-    await idbSet("dataFile", h);
     alert("データファイルを作りました。ページを開き直します。\n\n「✏ 編集する」を押し、名前を入れると、リンクを直せます。");
     location.reload();
   } catch (err) {
@@ -1120,7 +1198,7 @@ const TOUR = [
   { sel: "#search", title: "さがす", text: "名前や説明の一部を入れると、当てはまるリンクだけが表示されます。" },
   { sel: "#btnReload", title: "最新にする", text: "ほかの先生がリンクを直したときは、このボタンで最新の内容が表示されます。" },
   { sel: "#btnLog", title: "編集の記録", text: "誰が・いつリンクを編集したかを、新しい順に見られます(何を変えたかは残りません)。" },
-  { sel: "#btnEdit", title: "リンクを足す・直す・消す", text: "担当の先生は「編集する」を押し、あなたの名前を入れると(パスワードは要りません)、リンクや区分を追加・変更・削除できます。変更は自動で保存され、全員の画面に反映されます。" },
+  { sel: "#btnEdit", title: "リンクを足す・直す・消す", text: "担当の先生は「編集する」を押し、あなたの名前を入れると(パスワードは要りません)、リンクや区分を追加・変更・削除できます。変更は自動で保存され、全員の画面に反映されます。編集を始めると、その日の最初の1回だけ、直す前の内容が「バックアップ」フォルダに自動で控えられます。" },
 ];
 let tourIndex = 0, tourSampled = false;
 function startTour() {

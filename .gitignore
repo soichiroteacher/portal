@@ -3,3 +3,6 @@
 links-data.js
 *.json
 !.claude/launch.json
+
+# 自動バックアップ(実データの写し)。コミットしない
+バックアップ/
